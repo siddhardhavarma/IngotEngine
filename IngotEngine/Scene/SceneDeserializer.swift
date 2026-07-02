@@ -6,7 +6,7 @@
 //
 //  Reconstructs the complete scene state: node tree, transforms,
 //  physics bodies, behaviors, script attachments, sprite sheet
-//  frames, and camera references.
+//  frames, particles, tile maps, timers, and camera references.
 //
 //  §12.1: Swift's Codable cannot decode heterogeneous [Node] arrays.
 //  We dispatch on the "type" string manually for polymorphic decoding.
@@ -53,11 +53,14 @@ struct SceneDeserializer {
         let node: Node
         switch typeName {
         case "SpriteNode":    node = SpriteNode()
-        case "CameraNode":   node = CameraNode()
-        case "ShapeNode":    node = ShapeNode()
-        case "TextNode":     node = TextNode()
-        case "AudioNode":    node = AudioNode()
+        case "CameraNode":    node = CameraNode()
+        case "ShapeNode":     node = ShapeNode()
+        case "TextNode":      node = TextNode()
+        case "AudioNode":     node = AudioNode()
         case "CollisionNode": node = CollisionNode()
+        case "TimerNode":     node = TimerNode()
+        case "ParticleNode":  node = ParticleNode()
+        case "TileMapNode":   node = TileMapNode()
         default:              node = Node()
         }
 
@@ -73,11 +76,16 @@ struct SceneDeserializer {
 
         // State.
         if let enabled = dict["enabled"] as? Bool { node.isEnabled = enabled }
+        if let z = dict["zIndex"] as? Int { node.zIndex = z }
         if let groups = dict["groups"] as? [String] { node.groups = Set(groups) }
 
         // Type-specific.
-        if let camera = node as? CameraNode, let zoom = dict["zoom"] as? Double {
-            camera.zoom = Float(zoom)
+        if let camera = node as? CameraNode {
+            if let zoom = dict["zoom"] as? Double { camera.zoom = Float(zoom) }
+            if let target = dict["followTarget"] as? String {
+                camera.followTargetName = target
+                camera.followSmoothing = Float(dict["followSmoothing"] as? Double ?? 0)
+            }
         }
 
         if let shape = node as? ShapeNode {
@@ -91,6 +99,9 @@ struct SceneDeserializer {
         if let text = node as? TextNode {
             if let t = dict["text"] as? String { text.text = t }
             if let s = dict["fontSize"] as? Double { text.fontSize = CGFloat(s) }
+            if let c = dict["textColor"] as? [Double], c.count == 4 {
+                text.textColor = simd_float4(Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]))
+            }
         }
 
         if let audio = node as? AudioNode {
@@ -108,18 +119,82 @@ struct SceneDeserializer {
             }
         }
 
-        if let sprite = node as? SpriteNode, let uv = dict["uvRect"] as? [Double], uv.count == 4 {
-            sprite.uvRect = simd_float4(Float(uv[0]), Float(uv[1]), Float(uv[2]), Float(uv[3]))
+        if let timer = node as? TimerNode {
+            if let w = dict["waitTime"] as? Double { timer.waitTime = Float(w) }
+            if let o = dict["oneShot"] as? Bool { timer.oneShot = o }
+            if let a = dict["autostart"] as? Bool { timer.autostart = a }
+            if let s = dict["timeoutSignal"] as? String { timer.timeoutSignal = s }
         }
 
-        // Physics body.
+        if let particles = node as? ParticleNode,
+           let p = dict["particles"] as? [String: Any] {
+            if let v = p["emitting"] as? Bool { particles.emitting = v }
+            if let v = p["amount"] as? Int { particles.amount = v }
+            if let v = p["lifetime"] as? Double { particles.lifetime = Float(v) }
+            if let v = p["oneShot"] as? Bool { particles.oneShot = v }
+            if let v = p["direction"] as? Double { particles.direction = Float(v) }
+            if let v = p["spread"] as? Double { particles.spread = Float(v) }
+            if let v = p["initialVelocity"] as? Double { particles.initialVelocity = Float(v) }
+            if let v = p["velocityRandomness"] as? Double { particles.velocityRandomness = Float(v) }
+            if let gx = p["gravityX"] as? Double, let gy = p["gravityY"] as? Double {
+                particles.gravity = simd_float2(Float(gx), Float(gy))
+            }
+            if let v = p["startScale"] as? Double { particles.startScale = Float(v) }
+            if let v = p["endScale"] as? Double { particles.endScale = Float(v) }
+            if let c = p["startColor"] as? [Double], c.count == 4 {
+                particles.startColor = simd_float4(Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]))
+            }
+            if let c = p["endColor"] as? [Double], c.count == 4 {
+                particles.endColor = simd_float4(Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]))
+            }
+            if let v = p["angularVelocity"] as? Double { particles.angularVelocityDegrees = Float(v) }
+        }
+
+        if let tileMap = node as? TileMapNode,
+           let t = dict["tileMap"] as? [String: Any] {
+            if let w = t["tileWidth"] as? Double { tileMap.tileWidth = Float(w) }
+            if let h = t["tileHeight"] as? Double { tileMap.tileHeight = Float(h) }
+            if let c = t["atlasColumns"] as? Int { tileMap.atlasColumns = c }
+            if let r = t["atlasRows"] as? Int { tileMap.atlasRows = r }
+            if let solids = t["solidTiles"] as? [Int] { tileMap.solidTiles = Set(solids) }
+            if let tileTriples = t["tiles"] as? [[Int]] {
+                var tiles: [TileCoord: Int] = [:]
+                for triple in tileTriples where triple.count == 3 {
+                    tiles[TileCoord(x: triple[0], y: triple[1])] = triple[2]
+                }
+                tileMap.loadTiles(tiles)
+            }
+        }
+
+        if let sprite = node as? SpriteNode {
+            if let uv = dict["uvRect"] as? [Double], uv.count == 4 {
+                sprite.uvRect = simd_float4(Float(uv[0]), Float(uv[1]), Float(uv[2]), Float(uv[3]))
+            }
+            if let m = dict["modulate"] as? [Double], m.count == 4 {
+                sprite.modulate = simd_float4(Float(m[0]), Float(m[1]), Float(m[2]), Float(m[3]))
+            }
+        }
+
+        // Physics body. CollisionNode already made its own trigger body
+        // in init — reconfigure it instead of stacking a second one.
         if let bodyDict = dict["physicsBody"] as? [String: Any],
            let sizeX = bodyDict["sizeX"] as? Double,
            let sizeY = bodyDict["sizeY"] as? Double {
             let isDynamic = bodyDict["isDynamic"] as? Bool ?? true
-            let body = PhysicsBody(size: simd_float2(Float(sizeX), Float(sizeY)),
+            let body: PhysicsBody
+            if let existing = node.physicsBody {
+                body = existing
+                body.size = simd_float2(Float(sizeX), Float(sizeY))
+                body.isDynamic = isDynamic
+            } else {
+                body = PhysicsBody(size: simd_float2(Float(sizeX), Float(sizeY)),
                                    isDynamic: isDynamic)
-            node.addPhysicsBody(body)
+                node.addPhysicsBody(body)
+            }
+            if let g = bodyDict["gravityScale"] as? Double { body.gravityScale = Float(g) }
+            if let t = bodyDict["isTrigger"] as? Bool { body.isTrigger = t }
+            if let l = bodyDict["collisionLayer"] as? Int { body.collisionLayer = UInt32(truncatingIfNeeded: l) }
+            if let m = bodyDict["collisionMask"] as? Int { body.collisionMask = UInt32(truncatingIfNeeded: m) }
         }
 
         // Behaviors.
@@ -151,7 +226,9 @@ struct SceneDeserializer {
 
     // MARK: - Rule building
 
-    private static func buildRule(from dict: [String: Any]) -> Rule? {
+    /// Builds a Rule from an event/actions dictionary. Also used by the
+    /// AI bridge to turn "addRule" commands into live rules.
+    static func buildRule(from dict: [String: Any]) -> Rule? {
         guard let eventDict = dict["event"] as? [String: Any],
               let actionDicts = dict["actions"] as? [[String: Any]] else {
             return nil
@@ -170,6 +247,9 @@ struct SceneDeserializer {
         case "onActionHeld":
             guard let action = dict["action"] as? String else { return nil }
             return .onActionHeld(action)
+        case "onActionJustPressed":
+            guard let action = dict["action"] as? String else { return nil }
+            return .onActionJustPressed(action)
         case "everyFrame":  return .everyFrame
         case "onStart":     return .onStart
         case "onCollision": return .onCollision
@@ -200,6 +280,13 @@ struct SceneDeserializer {
             guard let prop = dict["property"] as? String,
                   let val = dict["value"] as? Double else { return nil }
             return .setProperty(prop, Float(val))
+        case "setVelocity":
+            guard let x = dict["x"] as? Double, let y = dict["y"] as? Double else { return nil }
+            return .setVelocity(x: Float(x), y: Float(y))
+        case "spawnPrefab":
+            guard let name = dict["prefab"] as? String,
+                  let x = dict["x"] as? Double, let y = dict["y"] as? Double else { return nil }
+            return .spawnPrefab(name, x: Float(x), y: Float(y))
         case "destroy":
             return .destroy
         default:
@@ -214,6 +301,9 @@ struct SceneDeserializer {
         if let sprite = node as? SpriteNode, let tex = sprite.texture {
             map[node.name] = tex
         }
+        if let tileMap = node as? TileMapNode, let tex = tileMap.texture {
+            map[node.name] = tex
+        }
         for child in node.children {
             map.merge(collectTextures(from: child)) { _, new in new }
         }
@@ -224,6 +314,10 @@ struct SceneDeserializer {
         if let sprite = node as? SpriteNode,
            let tex = textureMap[node.name] as? (any MTLTexture) {
             sprite.texture = tex
+        }
+        if let tileMap = node as? TileMapNode,
+           let tex = textureMap[node.name] as? (any MTLTexture) {
+            tileMap.texture = tex
         }
         for child in node.children {
             restoreTextures(textureMap, to: child)

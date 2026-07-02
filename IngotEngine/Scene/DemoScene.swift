@@ -49,14 +49,32 @@ class DemoScene: Scene {
         ProjectManager.shared.createScriptFile(named: "PlayerAnimator.js", code: animCode)
         playerNode.addBehavior(ScriptBehavior(scriptName: "PlayerAnimator.js"))
 
+        // --- Sparkle trail (shows off the particle system) ---
+        let trail = ParticleNode()
+        trail.name = "PlayerTrail"
+        trail.amount = 24
+        trail.lifetime = 0.6
+        trail.direction = 90
+        trail.spread = 180
+        trail.initialVelocity = 40
+        trail.gravity = simd_float2(0, 0)
+        trail.startScale = 10
+        trail.endScale = 1
+        trail.startColor = simd_float4(1.0, 0.9, 0.4, 0.9)
+        trail.endColor = simd_float4(1.0, 0.4, 0.1, 0)
+        trail.zIndex = -1  // Render behind the player.
+        playerNode.addChild(trail)
+
         rootNode.addChild(playerNode)
 
-        // --- Camera (child of player → follows automatically) ---
+        // --- Camera (smoothly follows the player — Camera2D-style) ---
         cameraNode = CameraNode()
         cameraNode.name = "Camera"
         cameraNode.zoom = 1.0
-        // Local position (0, 0) relative to player = centered on player.
-        playerNode.addChild(cameraNode)
+        cameraNode.position = playerNode.position
+        cameraNode.followTargetName = "Player"
+        cameraNode.followSmoothing = 5
+        rootNode.addChild(cameraNode)
         activeCamera = cameraNode
 
         // --- Scatter walls so the camera effect is visible ---

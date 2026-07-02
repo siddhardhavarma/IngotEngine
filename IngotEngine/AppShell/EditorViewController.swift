@@ -154,12 +154,26 @@ class EditorViewController: NSSplitViewController {
                 device: device
             )
         }
+
+        // AI-created sprites/tile maps get the editor's default texture
+        // so they're visible the instant the command runs.
+        aiBridge.defaultTextureProvider = { [weak self] in
+            self?.viewport.texture
+        }
     }
 
     // MARK: - Play / Stop
 
     private func togglePlay() {
         engine.isPlaying.toggle()
+
+        // Re-register physics on every play start so nodes added since
+        // the scene was set (sidebar, AI commands, painted tiles) collide.
+        if engine.isPlaying, let scene = engine.currentScene {
+            engine.physicsWorld.removeAllBodies()
+            scene.registerPhysicsBodies(with: engine.physicsWorld)
+        }
+
         sidebar.updatePlayButton(isPlaying: engine.isPlaying)
         updatePlayStopToolbarItem()
 
@@ -205,8 +219,13 @@ class EditorViewController: NSSplitViewController {
     }
 
     private func assignDefaultTexture(_ texture: MTLTexture, to node: Node) {
-        if let sprite = node as? SpriteNode, sprite.texture == nil {
+        // Shape/Text nodes generate their own textures lazily.
+        if let sprite = node as? SpriteNode, sprite.texture == nil,
+           !(node is ShapeNode), !(node is TextNode) {
             sprite.texture = texture
+        }
+        if let tileMap = node as? TileMapNode, tileMap.texture == nil {
+            tileMap.texture = texture
         }
         for child in node.children {
             assignDefaultTexture(texture, to: child)

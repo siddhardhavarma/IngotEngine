@@ -29,6 +29,8 @@ struct Uniforms {
 struct SpriteData {
     float4x4 modelMatrix;
     float4 uvRect;
+    float4 color;   // Per-instance modulate tint (RGBA), multiplied
+                    // over the texture sample. (1,1,1,1) = unchanged.
 };
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ struct VertexIn {
 struct VertexOut {
     float4 position [[position]];
     float2 textureCoordinate;
+    float4 color;
 };
 
 // ---------------------------------------------------------------------------
@@ -68,6 +71,8 @@ vertex VertexOut vertex_main(const device VertexIn* vertices [[buffer(0)]],
     float4 uv = instances[iid].uvRect;
     out.textureCoordinate = uv.xy + baseUV * uv.zw;
 
+    out.color = instances[iid].color;
+
     return out;
 }
 
@@ -81,5 +86,5 @@ fragment float4 fragment_main(VertexOut in [[stage_in]],
                                      min_filter::linear,
                                      address::clamp_to_edge);
 
-    return texture.sample(textureSampler, in.textureCoordinate);
+    return texture.sample(textureSampler, in.textureCoordinate) * in.color;
 }

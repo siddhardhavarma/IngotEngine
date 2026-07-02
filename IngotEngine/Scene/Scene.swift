@@ -51,6 +51,12 @@ class Scene {
         if let body = node.physicsBody {
             world.addBody(body)
         }
+        // Tile maps carry one static body per solid tile.
+        if let tileMap = node as? TileMapNode {
+            for body in tileMap.collisionBodies {
+                world.addBody(body)
+            }
+        }
         for child in node.children {
             registerBodiesRecursive(node: child, world: world)
         }

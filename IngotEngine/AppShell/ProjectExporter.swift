@@ -12,14 +12,22 @@
 //    └── Sources/
 //        ├── App/
 //        │   ├── GameApp.swift   ← SwiftUI @main
-//        │   └── GameViewController.swift  ← Metal renderer
-//        ├── Engine/             ← core engine files (copied)
+//        │   ├── GameViewController.swift  ← Metal renderer
+//        │   └── TouchControls.swift ← virtual joystick + action button
+//        ├── Engine/             ← core engine files (auto-copied when
+//        │                          the engine source path is known)
 //        ├── Resources/
 //        │   ├── scene.json      ← serialized scene
-//        │   ├── *.png, *.wav    ← assets
-//        │   └── Scripts/        ← .js lifecycle files
+//        │   ├── *.png, *.wav    ← assets (also under Assets/)
+//        │   ├── Scripts/        ← .js lifecycle files
+//        │   └── Prefabs/        ← prefab JSON files
 //        └── Shaders/
 //            └── Shaders.metal   ← GPU shaders
+//
+//  Engine auto-copy: set the "IngotEngineSourcePath" user default to
+//  the IngotEngine/ source directory (defaults write, or a future
+//  settings UI) and the exporter copies every cross-platform engine
+//  file into Sources/Engine/ so the package builds out of the box.
 //
 
 import Foundation
@@ -41,10 +49,11 @@ enum ExportPlatform: String, CaseIterable {
         }
     }
 
-    var uiFramework: String {
+    /// Touch overlay only makes sense on touch screens.
+    var supportsTouchControls: Bool {
         switch self {
-        case .iPhone, .iPad: return "UIKit"
-        case .appleTV:       return "UIKit"
+        case .iPhone, .iPad: return true
+        case .appleTV:       return false
         }
     }
 }
@@ -75,10 +84,13 @@ class ProjectExporter {
         let sourcesApp = destinationURL.appendingPathComponent("Sources/App")
         let sourcesEngine = destinationURL.appendingPathComponent("Sources/Engine")
         let sourcesResources = destinationURL.appendingPathComponent("Sources/Resources")
+        let sourcesAssets = destinationURL.appendingPathComponent("Sources/Resources/Assets")
         let sourcesScripts = destinationURL.appendingPathComponent("Sources/Resources/Scripts")
+        let sourcesPrefabs = destinationURL.appendingPathComponent("Sources/Resources/Prefabs")
         let sourcesShaders = destinationURL.appendingPathComponent("Sources/Shaders")
 
-        for dir in [sourcesApp, sourcesEngine, sourcesResources, sourcesScripts, sourcesShaders] {
+        for dir in [sourcesApp, sourcesEngine, sourcesResources, sourcesAssets,
+                    sourcesScripts, sourcesPrefabs, sourcesShaders] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
@@ -92,9 +104,12 @@ class ProjectExporter {
             .write(to: sourcesResources.appendingPathComponent("scene.json"),
                    atomically: true, encoding: .utf8)
 
-        // --- 3. Copy assets ---
+        // --- 3. Copy assets (flat for bundle lookups, and under
+        //        Assets/ for ProjectManager-style lookups) ---
         let assetExtensions = Set(["png", "jpg", "jpeg", "wav", "mp3", "aac"])
         copyFiles(from: assetsDirectory, to: sourcesResources,
+                  extensions: assetExtensions, fm: fm)
+        copyFiles(from: assetsDirectory, to: sourcesAssets,
                   extensions: assetExtensions, fm: fm)
 
         if let bundleResources = Bundle.main.resourceURL {
@@ -102,10 +117,14 @@ class ProjectExporter {
                       extensions: assetExtensions, fm: fm)
         }
 
-        // --- 4. Copy scripts ---
+        // --- 4. Copy scripts + prefabs ---
         if let scriptsDir = ProjectManager.shared.scriptsURL {
             copyFiles(from: scriptsDir, to: sourcesScripts,
                       extensions: Set(["js"]), fm: fm)
+        }
+        if let prefabsDir = ProjectManager.shared.prefabsURL {
+            copyFiles(from: prefabsDir, to: sourcesPrefabs,
+                      extensions: Set(["json"]), fm: fm)
         }
 
         // --- 5. Copy Metal shaders ---
@@ -122,12 +141,22 @@ class ProjectExporter {
             .write(to: sourcesApp.appendingPathComponent("GameViewController.swift"),
                    atomically: true, encoding: .utf8)
 
-        // --- 7. Generate a minimal engine stub ---
-        try generateEngineStubs()
-            .write(to: sourcesEngine.appendingPathComponent("EngineStubs.swift"),
-                   atomically: true, encoding: .utf8)
+        if preset.platform.supportsTouchControls {
+            try generateTouchControls()
+                .write(to: sourcesApp.appendingPathComponent("TouchControls.swift"),
+                       atomically: true, encoding: .utf8)
+        }
 
-        Log.info("Exported \(preset.gameName) for \(preset.platform.rawValue) to \(destinationURL.path)")
+        // --- 7. Copy engine sources (or leave instructions) ---
+        let engineCopied = copyEngineSources(to: sourcesEngine, fm: fm)
+        if !engineCopied {
+            try generateEngineStubs()
+                .write(to: sourcesEngine.appendingPathComponent("EngineStubs.swift"),
+                       atomically: true, encoding: .utf8)
+        }
+
+        Log.info("Exported \(preset.gameName) for \(preset.platform.rawValue) to \(destinationURL.path)"
+                 + (engineCopied ? " (engine sources included)" : " (copy engine sources manually — see EngineStubs.swift)"))
     }
 
     // MARK: - File copying
@@ -145,6 +174,69 @@ class ProjectExporter {
                 }
             }
         }
+    }
+
+    // MARK: - Engine source auto-copy
+
+    /// Engine files that must NOT ship in exported games:
+    /// editor-side AI tooling and the macOS demo scene.
+    private let excludedEngineFiles: Set<String> = [
+        "AssetGenerator.swift",
+        "AssetDownloadQueue.swift",
+        "AIConfiguration.swift",
+        "DemoScene.swift",
+    ]
+
+    /// Copies the cross-platform engine sources into the export.
+    /// Looks for the engine source tree at:
+    ///   1. UserDefaults "IngotEngineSourcePath"
+    ///   2. An "EngineSource" folder inside the app bundle
+    /// Returns true if any files were copied.
+    private func copyEngineSources(to engineDir: URL, fm: FileManager) -> Bool {
+        var candidates: [URL] = []
+        if let path = UserDefaults.standard.string(forKey: "IngotEngineSourcePath") {
+            candidates.append(URL(fileURLWithPath: path))
+        }
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("EngineSource") {
+            candidates.append(bundled)
+        }
+
+        let engineSubdirs = ["Core", "Logic", "Scene", "Physics", "Platform"]
+
+        for candidate in candidates {
+            // Accept either the IngotEngine/ folder itself or its parent.
+            let base: URL
+            if fm.fileExists(atPath: candidate.appendingPathComponent("Core/Engine.swift").path) {
+                base = candidate
+            } else if fm.fileExists(atPath: candidate.appendingPathComponent("IngotEngine/Core/Engine.swift").path) {
+                base = candidate.appendingPathComponent("IngotEngine")
+            } else {
+                continue
+            }
+
+            var copiedCount = 0
+            for subdir in engineSubdirs {
+                let dir = base.appendingPathComponent(subdir)
+                guard let files = try? fm.contentsOfDirectory(at: dir,
+                                                              includingPropertiesForKeys: nil,
+                                                              options: .skipsHiddenFiles) else { continue }
+                for file in files
+                where file.pathExtension == "swift" && !excludedEngineFiles.contains(file.lastPathComponent) {
+                    let dest = engineDir.appendingPathComponent(file.lastPathComponent)
+                    try? fm.removeItem(at: dest)
+                    if (try? fm.copyItem(at: file, to: dest)) != nil {
+                        copiedCount += 1
+                    }
+                }
+            }
+
+            if copiedCount > 0 {
+                Log.info("Copied \(copiedCount) engine source files from \(base.path)")
+                return true
+            }
+        }
+
+        return false
     }
 
     // MARK: - Code generation
@@ -196,11 +288,24 @@ class ProjectExporter {
     }
 
     private func generateGameViewController(preset: ExportPreset) -> String {
-        """
+        let touchSetup = preset.platform.supportsTouchControls
+            ? """
+                    // Virtual joystick + action button overlay.
+                    let controls = TouchControls(frame: view.bounds)
+                    controls.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                    view.addSubview(controls)
+            """
+            : """
+                    // Apple TV: hook up GCController input here.
+            """
+
+        return """
         //  GameViewController.swift — Auto-generated by Ingot Engine
         //  Target: \(preset.platform.rawValue)
         //
-        //  Copy the engine's core Swift files into Sources/Engine/ to compile.
+        //  Mirrors the editor's renderer: z-sorted, per-texture-batched
+        //  instanced quads with per-instance modulate color, tile maps,
+        //  and CPU particles.
 
         import UIKit
         import MetalKit
@@ -218,9 +323,16 @@ class ProjectExporter {
         struct SpriteData {
             var modelMatrix: simd_float4x4
             var uvRect: simd_float4
+            var color: simd_float4
         }
 
-        let maxSpriteCount = 100
+        struct RenderInstance {
+            var modelMatrix: simd_float4x4
+            var uvRect: simd_float4
+            var color: simd_float4
+            var texture: MTLTexture?
+            var zIndex: Int
+        }
 
         class GameViewController: UIViewController, MTKViewDelegate {
 
@@ -228,8 +340,10 @@ class ProjectExporter {
             var commandQueue: MTLCommandQueue!
             var pipelineState: MTLRenderPipelineState!
             var instanceBuffer: MTLBuffer!
+            private var instanceCapacity = 256
             private var lastFrameTime: CFTimeInterval = 0
             var engine = Engine()
+            private var fallbackTexture: MTLTexture!
 
             let vertices: [Vertex] = [
                 Vertex(position: simd_float2(-50,  50), textureCoordinate: simd_float2(0, 0)),
@@ -254,17 +368,47 @@ class ProjectExporter {
                 metalView.delegate = self
                 view.addSubview(metalView)
 
+        \(touchSetup)
+
                 commandQueue = device.makeCommandQueue()!
                 buildPipeline(for: metalView)
-
-                let bufferSize = MemoryLayout<SpriteData>.stride * maxSpriteCount
-                instanceBuffer = device.makeBuffer(length: bufferSize, options: .storageModeShared)!
+                makeInstanceBuffer(capacity: instanceCapacity)
+                makeFallbackTexture()
 
                 loadScene()
                 engine.isPlaying = true
             }
 
+            private func makeInstanceBuffer(capacity: Int) {
+                let bufferSize = MemoryLayout<SpriteData>.stride * capacity
+                instanceBuffer = device.makeBuffer(length: bufferSize, options: .storageModeShared)!
+                instanceCapacity = capacity
+            }
+
+            private func ensureInstanceCapacity(_ needed: Int) {
+                guard needed > instanceCapacity else { return }
+                var capacity = instanceCapacity
+                while capacity < needed { capacity *= 2 }
+                makeInstanceBuffer(capacity: capacity)
+            }
+
+            private func makeFallbackTexture() {
+                let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+                descriptor.usage = .shaderRead
+                fallbackTexture = device.makeTexture(descriptor: descriptor)
+                let pixel: [UInt8] = [255, 255, 255, 255]
+                fallbackTexture.replace(region: MTLRegionMake2D(0, 0, 1, 1),
+                                        mipmapLevel: 0, withBytes: pixel, bytesPerRow: 4)
+            }
+
             private func loadScene() {
+                // Point the project manager at the bundled Resources folder
+                // so scripts (Scripts/) and prefabs (Prefabs/) resolve.
+                if let resourceRoot = Bundle.main.url(forResource: "Resources", withExtension: nil) {
+                    ProjectManager.shared.currentProjectURL = resourceRoot
+                }
+
                 guard let url = Bundle.main.url(forResource: "scene", withExtension: "json",
                                                  subdirectory: "Resources"),
                       let json = try? String(contentsOf: url, encoding: .utf8),
@@ -284,14 +428,28 @@ class ProjectExporter {
                 engine.currentScene = scene
             }
 
-            private func assignTextures(to node: Node, loader: MTKTextureLoader) {
-                if let sprite = node as? SpriteNode, sprite.texture == nil {
-                    if let tex = try? loader.newTexture(name: sprite.name,
-                                                        scaleFactor: 1.0,
-                                                        bundle: nil,
-                                                        options: [.SRGB: false as NSNumber]) {
-                        sprite.texture = tex
+            private func loadNamedTexture(_ name: String, loader: MTKTextureLoader) -> MTLTexture? {
+                for ext in ["png", "jpg", "jpeg"] {
+                    if let url = Bundle.main.url(forResource: name, withExtension: ext,
+                                                  subdirectory: "Resources"),
+                       let tex = try? loader.newTexture(URL: url, options: [.SRGB: false as NSNumber]) {
+                        return tex
                     }
+                }
+                return nil
+            }
+
+            private func assignTextures(to node: Node, loader: MTKTextureLoader) {
+                if let sprite = node as? SpriteNode, sprite.texture == nil,
+                   !(node is ShapeNode), !(node is TextNode) {
+                    sprite.texture = loadNamedTexture(sprite.name, loader: loader)
+                        ?? loadNamedTexture("test_sprite", loader: loader)
+                        ?? fallbackTexture
+                }
+                if let tileMap = node as? TileMapNode, tileMap.texture == nil {
+                    tileMap.texture = loadNamedTexture(tileMap.name, loader: loader)
+                        ?? loadNamedTexture("test_sprite", loader: loader)
+                        ?? fallbackTexture
                 }
                 for child in node.children {
                     assignTextures(to: child, loader: loader)
@@ -321,6 +479,53 @@ class ProjectExporter {
 
             func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+            private func collectRenderInstances(from node: Node, into result: inout [RenderInstance]) {
+                guard node.isEnabled else { return }
+
+                if let shape = node as? ShapeNode {
+                    shape.ensureTexture(device: device)
+                } else if let text = node as? TextNode {
+                    text.ensureTexture(device: device)
+                }
+
+                if let sprite = node as? SpriteNode, sprite.texture != nil {
+                    result.append(RenderInstance(
+                        modelMatrix: sprite.globalTransform,
+                        uvRect: sprite.uvRect,
+                        color: sprite.modulate,
+                        texture: sprite.texture,
+                        zIndex: sprite.zIndex))
+                }
+
+                if let tileMap = node as? TileMapNode {
+                    let atlas = tileMap.texture ?? fallbackTexture
+                    for (coord, tileIndex) in tileMap.tiles {
+                        result.append(RenderInstance(
+                            modelMatrix: tileMap.modelMatrix(for: coord),
+                            uvRect: tileMap.uvRect(forTileIndex: tileIndex),
+                            color: simd_float4(1, 1, 1, 1),
+                            texture: atlas,
+                            zIndex: tileMap.zIndex))
+                    }
+                }
+
+                if let particles = node as? ParticleNode {
+                    let particleTexture = ParticleNode.particleTexture(device: device)
+                    for particle in particles.particles {
+                        result.append(RenderInstance(
+                            modelMatrix: particles.modelMatrix(of: particle),
+                            uvRect: simd_float4(0, 0, 1, 1),
+                            color: particles.color(of: particle),
+                            texture: particleTexture,
+                            zIndex: particles.zIndex))
+                    }
+                }
+
+                for child in node.children {
+                    collectRenderInstances(from: child, into: &result)
+                }
+            }
+
             func draw(in view: MTKView) {
                 let now = CACurrentMediaTime()
                 let rawDelta = Float(now - lastFrameTime)
@@ -331,27 +536,37 @@ class ProjectExporter {
 
                 engine.step(deltaTime: rawDelta)
 
-                var visibleSprites: [SpriteNode] = []
+                var instances: [RenderInstance] = []
                 if let root = engine.currentScene?.rootNode {
-                    collectSprites(from: root, into: &visibleSprites)
+                    collectRenderInstances(from: root, into: &instances)
                 }
 
-                let count = min(visibleSprites.count, maxSpriteCount)
-                let ptr = instanceBuffer.contents().bindMemory(to: SpriteData.self, capacity: count)
+                let sorted = instances.enumerated()
+                    .sorted { ($0.element.zIndex, $0.offset) < ($1.element.zIndex, $1.offset) }
+                    .map { $0.element }
+
+                let count = sorted.count
+                ensureInstanceCapacity(count)
+
+                let ptr = instanceBuffer.contents().bindMemory(to: SpriteData.self,
+                                                               capacity: max(count, 1))
                 for i in 0..<count {
-                    ptr[i] = SpriteData(modelMatrix: visibleSprites[i].globalTransform,
-                                        uvRect: visibleSprites[i].uvRect)
+                    ptr[i] = SpriteData(modelMatrix: sorted[i].modelMatrix,
+                                        uvRect: sorted[i].uvRect,
+                                        color: sorted[i].color)
                 }
 
-                // Build view-projection matrix with camera support.
+                // Build view-projection matrix with camera + shake support.
                 let projection = orthographicProjection(width: w, height: h)
                 let viewMatrix: simd_float4x4
                 if let camera = engine.currentScene?.activeCamera {
                     let camPos = camera.globalTransform.columns.3
                     let z = camera.zoom
+                    let cx = camPos.x + camera.shakeOffset.x
+                    let cy = camPos.y + camera.shakeOffset.y
                     viewMatrix = translationMatrix(tx: w/2, ty: h/2)
                                * scaleMatrix(sx: z, sy: z)
-                               * translationMatrix(tx: -camPos.x, ty: -camPos.y)
+                               * translationMatrix(tx: -cx, ty: -cy)
                 } else {
                     viewMatrix = matrix_identity_float4x4
                 }
@@ -366,66 +581,198 @@ class ProjectExporter {
                 enc.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 1)
                 enc.setVertexBuffer(instanceBuffer, offset: 0, index: 2)
 
-                if let tex = visibleSprites.first?.texture {
-                    enc.setFragmentTexture(tex, index: 0)
-                }
-
-                if count > 0 {
+                var batchStart = 0
+                while batchStart < count {
+                    let batchTexture = sorted[batchStart].texture ?? fallbackTexture!
+                    var batchEnd = batchStart + 1
+                    while batchEnd < count && sorted[batchEnd].texture === sorted[batchStart].texture {
+                        batchEnd += 1
+                    }
+                    enc.setFragmentTexture(batchTexture, index: 0)
                     enc.drawPrimitives(type: .triangle, vertexStart: 0,
-                                       vertexCount: vertices.count, instanceCount: count)
+                                       vertexCount: vertices.count,
+                                       instanceCount: batchEnd - batchStart,
+                                       baseInstance: batchStart)
+                    batchStart = batchEnd
                 }
 
                 enc.endEncoding()
                 if let drawable = view.currentDrawable { cb.present(drawable) }
                 cb.commit()
             }
+        }
+        """
+    }
 
-            private func collectSprites(from node: Node, into result: inout [SpriteNode]) {
-                guard node.isEnabled else { return }
-                if let sprite = node as? SpriteNode, sprite.texture != nil {
-                    result.append(sprite)
+    /// A UIKit overlay translating touches into InputManager actions:
+    /// left half of the screen = virtual joystick (move_left/right/up/down),
+    /// right half = action button. The exported game plays with the same
+    /// action names the editor's keyboard uses, so behaviors and scripts
+    /// run unchanged on iPhone and iPad.
+    private func generateTouchControls() -> String {
+        """
+        //  TouchControls.swift — Auto-generated by Ingot Engine
+        //
+        //  Virtual joystick (left half) + action button (right half).
+        //  Feeds the same InputManager action names as the editor's
+        //  keyboard mapping, so gameplay logic is platform-agnostic.
+
+        import UIKit
+
+        class TouchControls: UIView {
+
+            /// Distance (points) a joystick touch must move before a
+            /// direction engages. Small enough to feel instant, big
+            /// enough to avoid jitter.
+            private let deadZone: CGFloat = 18
+
+            private var joystickTouch: UITouch?
+            private var joystickOrigin: CGPoint = .zero
+            private var actionTouch: UITouch?
+
+            private let joystickBase = CAShapeLayer()
+            private let joystickThumb = CAShapeLayer()
+
+            override init(frame: CGRect) {
+                super.init(frame: frame)
+                backgroundColor = .clear
+                isMultipleTouchEnabled = true
+
+                joystickBase.fillColor = UIColor.white.withAlphaComponent(0.12).cgColor
+                joystickThumb.fillColor = UIColor.white.withAlphaComponent(0.28).cgColor
+                joystickBase.isHidden = true
+                joystickThumb.isHidden = true
+                layer.addSublayer(joystickBase)
+                layer.addSublayer(joystickThumb)
+            }
+
+            required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+            // MARK: - Touch handling
+
+            override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+                for touch in touches {
+                    let point = touch.location(in: self)
+                    if point.x < bounds.midX && joystickTouch == nil {
+                        joystickTouch = touch
+                        joystickOrigin = point
+                        showJoystick(at: point)
+                    } else if actionTouch == nil {
+                        actionTouch = touch
+                        InputManager.shared.setActionPressed("action", isPressed: true)
+                    }
                 }
-                for child in node.children { collectSprites(from: child, into: &result) }
+            }
+
+            override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+                guard let touch = joystickTouch, touches.contains(touch) else { return }
+                let point = touch.location(in: self)
+                updateJoystick(to: point)
+
+                let dx = point.x - joystickOrigin.x
+                let dy = point.y - joystickOrigin.y
+
+                // Screen Y grows downward; world Y grows upward.
+                InputManager.shared.setActionPressed("move_left",  isPressed: dx < -deadZone)
+                InputManager.shared.setActionPressed("move_right", isPressed: dx >  deadZone)
+                InputManager.shared.setActionPressed("move_up",    isPressed: dy < -deadZone)
+                InputManager.shared.setActionPressed("move_down",  isPressed: dy >  deadZone)
+            }
+
+            override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+                endTouches(touches)
+            }
+
+            override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+                endTouches(touches)
+            }
+
+            private func endTouches(_ touches: Set<UITouch>) {
+                for touch in touches {
+                    if touch == joystickTouch {
+                        joystickTouch = nil
+                        hideJoystick()
+                        for action in ["move_left", "move_right", "move_up", "move_down"] {
+                            InputManager.shared.setActionPressed(action, isPressed: false)
+                        }
+                    }
+                    if touch == actionTouch {
+                        actionTouch = nil
+                        InputManager.shared.setActionPressed("action", isPressed: false)
+                    }
+                }
+            }
+
+            // MARK: - Joystick visuals
+
+            private func showJoystick(at point: CGPoint) {
+                joystickBase.path = UIBezierPath(
+                    ovalIn: CGRect(x: point.x - 55, y: point.y - 55, width: 110, height: 110)).cgPath
+                joystickBase.isHidden = false
+                updateJoystick(to: point)
+                joystickThumb.isHidden = false
+            }
+
+            private func updateJoystick(to point: CGPoint) {
+                var dx = point.x - joystickOrigin.x
+                var dy = point.y - joystickOrigin.y
+                let length = sqrt(dx * dx + dy * dy)
+                if length > 45 {  // Clamp the thumb inside the base ring.
+                    dx = dx / length * 45
+                    dy = dy / length * 45
+                }
+                let x = joystickOrigin.x + dx
+                let y = joystickOrigin.y + dy
+                joystickThumb.path = UIBezierPath(
+                    ovalIn: CGRect(x: x - 25, y: y - 25, width: 50, height: 50)).cgPath
+            }
+
+            private func hideJoystick() {
+                joystickBase.isHidden = true
+                joystickThumb.isHidden = true
             }
         }
         """
     }
 
     /// Generates a minimal stub file explaining what engine files to copy.
+    /// Only written when the engine sources could not be auto-copied.
     private func generateEngineStubs() -> String {
         """
         //  EngineStubs.swift — Auto-generated by Ingot Engine
         //
-        //  IMPORTANT: Copy these files from the Ingot Engine project
-        //  into this directory to compile the exported game:
+        //  The exporter could not locate the Ingot Engine sources, so
+        //  they were not copied automatically. Either:
+        //
+        //    A) Point the editor at the engine sources once:
+        //         defaults write <editor bundle id> IngotEngineSourcePath \\
+        //             /path/to/IngotEngine/IngotEngine
+        //       then re-export, or
+        //
+        //    B) Copy these files into this directory by hand:
         //
         //  From Core/:
-        //    - Engine.swift, GameClock.swift, Math.swift
-        //    - ProjectManager.swift (for script loading)
-        //    - AssetHandle.swift, Log.swift, Tween.swift, FrameAnimation.swift
+        //    Engine.swift, GameClock.swift, Math.swift, ProjectManager.swift,
+        //    ProjectFile.swift, AssetHandle.swift, Log.swift, Tween.swift,
+        //    FrameAnimation.swift, Node+JSExport.swift
         //
         //  From Scene/:
-        //    - Node.swift, SpriteNode.swift, CameraNode.swift, Scene.swift
-        //    - ShapeNode.swift, TextNode.swift, AudioNode.swift, CollisionNode.swift
-        //    - SceneDeserializer.swift
+        //    Node.swift, SpriteNode.swift, CameraNode.swift, Scene.swift,
+        //    ShapeNode.swift, TextNode.swift, AudioNode.swift, CollisionNode.swift,
+        //    TimerNode.swift, ParticleNode.swift, TileMapNode.swift, Prefab.swift,
+        //    SceneSerializer.swift, SceneDeserializer.swift
         //
         //  From Logic/:
-        //    - Behavior.swift, ScriptBehavior.swift
-        //    - Signal.swift, EventBus.swift
+        //    Behavior.swift, ScriptBehavior.swift, Signal.swift, EventBus.swift
         //
         //  From Physics/:
-        //    - PhysicsBody.swift, PhysicsWorld.swift
+        //    PhysicsBody.swift, PhysicsWorld.swift
         //
         //  From Platform/:
-        //    - InputManager.swift, AudioManager.swift, MusicPlayer.swift
+        //    InputManager.swift, AudioManager.swift, MusicPlayer.swift
         //
-        //  From Core/ (JSExport):
-        //    - Node+JSExport.swift
-        //
-        //  From Rendering/:
-        //    - Shaders.metal (already in Sources/Shaders/)
-        //
-        //  A future version of Ingot Engine will copy these automatically.
+        //  Do NOT copy: AppShell/ (macOS editor), AssetGenerator.swift,
+        //  AssetDownloadQueue.swift, AIConfiguration.swift, DemoScene.swift.
         """
     }
 }

@@ -11,6 +11,12 @@
 //    2. Bridge: forward keyboard events to engine.input, forward
 //       mouse events to the editor via callbacks.
 //
+//  Rendering model: the scene tree is flattened into RenderInstances
+//  (sprites, tiles, particles), sorted by zIndex (stable — equal
+//  zIndex keeps tree order), then drawn as instanced batches. A new
+//  draw call starts only when the texture changes, so a whole tile
+//  map or particle system still costs one draw call.
+//
 
 import Cocoa
 import MetalKit
@@ -31,9 +37,19 @@ struct Uniforms {
 struct SpriteData {
     var modelMatrix: simd_float4x4
     var uvRect: simd_float4
+    var color: simd_float4
 }
 
-let maxSpriteCount = 100
+// ---------------------------------------------------------------------------
+// RenderInstance — one drawable quad, CPU-side
+// ---------------------------------------------------------------------------
+struct RenderInstance {
+    var modelMatrix: simd_float4x4
+    var uvRect: simd_float4
+    var color: simd_float4
+    var texture: MTLTexture?
+    var zIndex: Int
+}
 
 class ViewportViewController: NSViewController, MTKViewDelegate {
 
@@ -42,6 +58,7 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     var pipelineState: MTLRenderPipelineState!
     var texture: MTLTexture!
     var instanceBuffer: MTLBuffer!
+    private var instanceCapacity = 256
 
     /// Raw frame timestamp — used only to compute the deltaTime
     /// passed to engine.step(). The engine's GameClock handles
@@ -100,14 +117,28 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         buildPipeline(for: metalView)
         loadTexture()
 
-        let bufferSize = MemoryLayout<SpriteData>.stride * maxSpriteCount
+        makeInstanceBuffer(capacity: instanceCapacity)
+
+        // NOTE: Scene creation has moved to EditorViewController.
+        // The viewport only renders what the engine provides.
+    }
+
+    private func makeInstanceBuffer(capacity: Int) {
+        let bufferSize = MemoryLayout<SpriteData>.stride * capacity
         guard let buffer = device.makeBuffer(length: bufferSize, options: .storageModeShared) else {
             fatalError("Could not create instance buffer.")
         }
         instanceBuffer = buffer
+        instanceCapacity = capacity
+    }
 
-        // NOTE: Scene creation has moved to EditorViewController.
-        // The viewport only renders what the engine provides.
+    /// Grows the instance buffer when a scene (tile maps, particles)
+    /// needs more quads than the current capacity.
+    private func ensureInstanceCapacity(_ needed: Int) {
+        guard needed > instanceCapacity else { return }
+        var capacity = instanceCapacity
+        while capacity < needed { capacity *= 2 }
+        makeInstanceBuffer(capacity: capacity)
     }
 
     // MARK: - Keyboard input
@@ -262,7 +293,12 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
     // MARK: - Scene tree traversal
 
-    private func collectSpriteNodes(from node: Node, into result: inout [SpriteNode]) {
+    /// Flattens the scene tree into render instances. Sprites, tiles,
+    /// and particles all become quads; each carries its own texture
+    /// reference and modulate color.
+    private func collectRenderInstances(from node: Node,
+                                        into result: inout [RenderInstance],
+                                        sprites: inout [SpriteNode]) {
         guard node.isEnabled else { return }
 
         // Ensure dynamic textures are up-to-date for ShapeNode / TextNode.
@@ -273,11 +309,44 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         }
 
         if let sprite = node as? SpriteNode, sprite.texture != nil {
-            result.append(sprite)
+            sprites.append(sprite)
+            result.append(RenderInstance(
+                modelMatrix: sprite.globalTransform,
+                uvRect: sprite.uvRect,
+                color: sprite.modulate,
+                texture: sprite.texture,
+                zIndex: sprite.zIndex
+            ))
+        }
+
+        if let tileMap = node as? TileMapNode {
+            let atlas = tileMap.texture ?? texture
+            for (coord, tileIndex) in tileMap.tiles {
+                result.append(RenderInstance(
+                    modelMatrix: tileMap.modelMatrix(for: coord),
+                    uvRect: tileMap.uvRect(forTileIndex: tileIndex),
+                    color: simd_float4(1, 1, 1, 1),
+                    texture: atlas,
+                    zIndex: tileMap.zIndex
+                ))
+            }
+        }
+
+        if let particles = node as? ParticleNode {
+            let particleTexture = ParticleNode.particleTexture(device: device)
+            for particle in particles.particles {
+                result.append(RenderInstance(
+                    modelMatrix: particles.modelMatrix(of: particle),
+                    uvRect: simd_float4(0, 0, 1, 1),
+                    color: particles.color(of: particle),
+                    texture: particleTexture,
+                    zIndex: particles.zIndex
+                ))
+            }
         }
 
         for child in node.children {
-            collectSpriteNodes(from: child, into: &result)
+            collectRenderInstances(from: child, into: &result, sprites: &sprites)
         }
     }
 
@@ -304,21 +373,29 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         // whether the engine is playing. This means you see your nodes
         // in the editor even when the game isn't running.
 
+        var instances: [RenderInstance] = []
         var visibleSprites: [SpriteNode] = []
         if let sceneRoot = engine.currentScene?.rootNode {
-            collectSpriteNodes(from: sceneRoot, into: &visibleSprites)
+            collectRenderInstances(from: sceneRoot, into: &instances, sprites: &visibleSprites)
         }
         lastVisibleSprites = visibleSprites
 
-        let instanceCount = min(visibleSprites.count, maxSpriteCount)
+        // --- Z-order: stable sort by zIndex (equal z keeps tree order) ---
+        let sorted = instances.enumerated()
+            .sorted { ($0.element.zIndex, $0.offset) < ($1.element.zIndex, $1.offset) }
+            .map { $0.element }
+
+        let instanceCount = sorted.count
+        ensureInstanceCapacity(instanceCount)
 
         let instancePtr = instanceBuffer.contents().bindMemory(
-            to: SpriteData.self, capacity: instanceCount
+            to: SpriteData.self, capacity: max(instanceCount, 1)
         )
         for i in 0..<instanceCount {
             instancePtr[i] = SpriteData(
-                modelMatrix: visibleSprites[i].globalTransform,
-                uvRect: visibleSprites[i].uvRect
+                modelMatrix: sorted[i].modelMatrix,
+                uvRect: sorted[i].uvRect,
+                color: sorted[i].color
             )
         }
 
@@ -338,18 +415,11 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         //   cameraTransform = translate(200, 100)
         //   viewMatrix      = translate(-200, -100)   ← inverse
         //
-        // Every vertex is then shifted by (-200, -100), which makes the
-        // camera's position appear at the center of the screen.
-        //
         // Zoom works similarly: zoom = 2.0 means everything is 2x bigger.
         // We scale the view by the zoom factor AFTER centering.
         //
         // The full formula:
         //   view = translate(screenW/2, screenH/2) × scale(zoom) × translate(-cx, -cy)
-        //
-        //   Step 1: translate(-cx, -cy) — center camera at origin
-        //   Step 2: scale(zoom)         — magnify around center
-        //   Step 3: translate(screenCenter) — map origin to screen center
         //
         //   viewProjection = projection × view
         //
@@ -359,8 +429,11 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         if let camera = engine.currentScene?.activeCamera {
             let camPos = camera.globalTransform.columns.3
             let z = camera.zoom
+            // Screen shake displaces the camera without moving the node.
+            let cx = camPos.x + camera.shakeOffset.x
+            let cy = camPos.y + camera.shakeOffset.y
 
-            let centerOnCamera = translationMatrix(tx: -camPos.x, ty: -camPos.y)
+            let centerOnCamera = translationMatrix(tx: -cx, ty: -cy)
             let applyZoom = scaleMatrix(sx: z, sy: z)
             let centerOnScreen = translationMatrix(tx: screenWidth / 2, ty: screenHeight / 2)
 
@@ -389,12 +462,26 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
         encoder.setVertexBuffer(instanceBuffer, offset: 0, index: 2)
 
-        encoder.setFragmentTexture(texture, index: 0)
+        // --- Batched draws: one call per run of instances sharing a
+        //     texture. baseInstance keeps [[instance_id]] aligned with
+        //     the shared instance buffer. ---
+        var batchStart = 0
+        while batchStart < instanceCount {
+            let batchTexture = sorted[batchStart].texture ?? texture
+            var batchEnd = batchStart + 1
+            while batchEnd < instanceCount && sorted[batchEnd].texture === sorted[batchStart].texture {
+                batchEnd += 1
+            }
 
-        encoder.drawPrimitives(type: .triangle,
-                               vertexStart: 0,
-                               vertexCount: vertices.count,
-                               instanceCount: instanceCount)
+            encoder.setFragmentTexture(batchTexture, index: 0)
+            encoder.drawPrimitives(type: .triangle,
+                                   vertexStart: 0,
+                                   vertexCount: vertices.count,
+                                   instanceCount: batchEnd - batchStart,
+                                   baseInstance: batchStart)
+
+            batchStart = batchEnd
+        }
 
         encoder.endEncoding()
 
