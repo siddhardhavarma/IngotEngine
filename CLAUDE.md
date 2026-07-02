@@ -9,9 +9,11 @@ A 2D game engine + editor for macOS, built from scratch with Metal and AppKit. T
 open IngotEngine.xcodeproj
 
 # Build & Run (Cmd+R)
-# On first launch, you'll be prompted to select/create a project folder
-# The editor opens with a demo scene (player, particle trail, walls, follow camera)
+# The Project Launcher opens first (recent projects / New Project / Open)
+# Choosing a project opens the editor with a demo scene (player, particle
+# trail, walls, follow camera)
 # Click ▶ in the toolbar to enter Play mode (WASD to move)
+# Set AI provider + API keys via the ✦ AI Settings toolbar button
 ```
 
 ## Tech Stack
@@ -71,7 +73,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `AssetHandle.swift` | Type-safe `AssetHandle<T>` with string IDs. Phantom types: `TextureAsset`, `SoundAsset`. |
 | `Log.swift` | Leveled logging (debug/info/warning/error) with optional editor chat sink. |
 | `Node+JSExport.swift` | JSExport bridge: x, y, rotationDegrees, scaleX/Y, zIndexJS, visible, name, jsZoom, setFrame(), getChild(), emitSignal(), setVelocity(), spawn(prefab,x,y), destroy(). |
-| `AIConfiguration.swift` | `AIProvider` enum + `AISettings` struct for LLM/asset API keys. |
+| `AIConfiguration.swift` | `AIProvider` enum + `AISettings` struct: provider, per-provider model IDs (user-editable), API keys. `load()`/`save()` persist preferences to UserDefaults and keys to the Keychain. |
 
 ### Logic/ (4 files)
 | File | What it does |
@@ -114,15 +116,19 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `MusicPlayer.swift` | Single-track background music with loop/pause/resume/volume. |
 | `AssetGenerator.swift` | DALL-E 3 image gen + ElevenLabs sound gen. Saves to project Assets/. |
 | `AssetDownloadQueue.swift` | Async asset pipeline: placeholder → background download → main thread swap. Never blocks the render loop. |
+| `KeychainStore.swift` | Minimal Keychain wrapper (generic-password items) for API keys — secrets never live in source, project files, or exports. |
 
 ### Rendering/ (1 file)
 | File | What it does |
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (10 files — the macOS editor)
+### AppShell/ (13 files — the macOS editor)
 | File | What it does |
 |------|-------------|
+| `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
+| `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
+| `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
 | `EditorViewController.swift` | NSSplitViewController root. Owns Engine, wires all panels. NSToolbarDelegate for Save/Load/Play/Export buttons. Manages undo (snapshot-based), AI prompt dispatch, play/stop (re-registers physics each play), save/load, runtime scene-loader wiring, tile-paint wiring, export. |
 | `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Dynamic instance buffer grows with the scene. Camera shake applied to the view matrix. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase) when the inspector's Paint Mode is on. |
 | `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type, double-click renames in place (undoable). Refreshes after AI commands and inspector edits. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |
@@ -188,14 +194,12 @@ defaults write <editor-bundle-id> IngotEngineSourcePath /path/to/IngotEngine/Ing
 
 ## Configuration
 
-### AI Provider (in EditorViewController.viewDidLoad)
-```swift
-aiSettings.provider = .claude
-aiSettings.claudeKey = "sk-ant-api03-..."
-// or
-aiSettings.provider = .openAI
-aiSettings.openAIKey = "sk-..."
-```
+### AI Provider (✦ AI Settings in the toolbar)
+Pick the provider (OpenAI / Claude / Gemini), optionally change the model ID
+(defaults: `gpt-4o`, `claude-sonnet-5`, `gemini-2.5-flash`), and paste API
+keys. Keys go to the macOS Keychain; provider/model choices to UserDefaults.
+Nothing is hardcoded in source anymore — `AISettings.load()` restores the
+configuration at launch.
 
 ### Input Map (in InputManager.swift)
 ```swift
@@ -223,7 +227,7 @@ engine.physicsWorld.gravity = simd_float2(0, 0)     // top-down (default)
 
 ## Known Gaps / TODO
 1. No `.xcodeproj` generation — export uses `.swiftpm` only (the iPhone/iPad package is a runnable `.iOSApplication` app, though)
-2. No file-watching / hot-reload for scripts or assets
+2. No file-watching for EXTERNAL script/asset edits (the built-in Script Editor does hot-reload on save, but changes made in other apps aren't noticed)
 3. Texture references use node names, not proper asset IDs
 4. Dynamic-vs-dynamic collisions detect but don't resolve
 5. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)

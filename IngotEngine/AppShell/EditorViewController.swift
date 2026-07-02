@@ -10,10 +10,11 @@ import Cocoa
 
 // MARK: - Toolbar item identifiers
 private extension NSToolbarItem.Identifier {
-    static let playStop = NSToolbarItem.Identifier("PlayStop")
-    static let save     = NSToolbarItem.Identifier("Save")
-    static let load     = NSToolbarItem.Identifier("Load")
-    static let export   = NSToolbarItem.Identifier("Export")
+    static let playStop   = NSToolbarItem.Identifier("PlayStop")
+    static let save       = NSToolbarItem.Identifier("Save")
+    static let load       = NSToolbarItem.Identifier("Load")
+    static let export     = NSToolbarItem.Identifier("Export")
+    static let aiSettings = NSToolbarItem.Identifier("AISettings")
 }
 
 class EditorViewController: NSSplitViewController {
@@ -27,9 +28,13 @@ class EditorViewController: NSSplitViewController {
     private var chatPanel: ChatPanelViewController!
     private var assetBrowser: AssetBrowserViewController!
     private var eventSheet: EventSheetViewController!
+    private var scriptEditor: ScriptEditorViewController!
 
     private let aiBridge = AIEngineBridge()
-    private var aiSettings = AISettings()
+
+    /// Provider, model IDs, and keys — loaded from UserDefaults +
+    /// Keychain, edited via the AI Settings toolbar sheet.
+    private var aiSettings = AISettings.load()
 
     private var playStopButton: NSToolbarItem?
 
@@ -79,6 +84,13 @@ class EditorViewController: NSSplitViewController {
         eventSheet = EventSheetViewController()
         eventSheet.title = "Event Sheet"
         tabController.addChild(eventSheet)
+
+        scriptEditor = ScriptEditorViewController()
+        scriptEditor.title = "Script Editor"
+        scriptEditor.aiBridge = aiBridge
+        scriptEditor.sceneProvider = { [weak self] in self?.engine.currentScene }
+        scriptEditor.settingsProvider = { [weak self] in self?.aiSettings ?? AISettings() }
+        tabController.addChild(scriptEditor)
 
         assetBrowser = AssetBrowserViewController()
         assetBrowser.title = "Project Files"
@@ -367,9 +379,13 @@ class EditorViewController: NSSplitViewController {
             chatPanel.appendToHistory("AI: No scene loaded.")
             return
         }
+        guard aiSettings.isConfigured else {
+            chatPanel.appendToHistory("AI: \(aiSettings.provider.displayName) has no API key — open AI Settings (✦ in the toolbar).")
+            return
+        }
         registerUndoSnapshot()
         let fullPrompt = aiBridge.buildPrompt(userText: prompt, currentScene: scene)
-        chatPanel.appendToHistory("AI: Sending to \(aiSettings.provider.rawValue)...")
+        chatPanel.appendToHistory("AI: Sending to \(aiSettings.activeModel)…")
 
         let bridge = self.aiBridge
         let settings = self.aiSettings
@@ -399,11 +415,11 @@ class EditorViewController: NSSplitViewController {
 extension EditorViewController: NSToolbarDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.playStop, .flexibleSpace, .save, .load, .export]
+        [.playStop, .flexibleSpace, .save, .load, .export, .aiSettings]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.save, .load, .flexibleSpace, .playStop, .flexibleSpace, .export]
+        [.save, .load, .flexibleSpace, .playStop, .flexibleSpace, .aiSettings, .export]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -441,6 +457,13 @@ extension EditorViewController: NSToolbarDelegate {
             item.target = self
             item.action = #selector(toolbarExport)
 
+        case .aiSettings:
+            item.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "AI Settings")
+            item.label = "AI Settings"
+            item.toolTip = "AI provider, models, and API keys"
+            item.target = self
+            item.action = #selector(toolbarAISettings)
+
         default:
             return nil
         }
@@ -452,4 +475,16 @@ extension EditorViewController: NSToolbarDelegate {
     @objc private func toolbarSave() { saveCurrentScene() }
     @objc private func toolbarLoad() { loadSceneFromDisk() }
     @objc private func toolbarExport() { exportToiOS() }
+
+    @objc private func toolbarAISettings() {
+        let settingsSheet = AISettingsViewController()
+        settingsSheet.settings = aiSettings
+        settingsSheet.onSave = { [weak self] saved in
+            self?.aiSettings = saved
+            self?.chatPanel.appendToHistory(saved.isConfigured
+                ? "AI: \(saved.provider.displayName) configured (\(saved.activeModel))."
+                : "AI: \(saved.provider.displayName) selected — no API key set.")
+        }
+        presentAsSheet(settingsSheet)
+    }
 }
