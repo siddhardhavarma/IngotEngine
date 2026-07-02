@@ -130,6 +130,9 @@ class SidebarViewController: NSViewController,
             ("Camera Node",    #selector(addCameraNode)),
             ("Audio Node",     #selector(addAudioNode)),
             ("Collision Node", #selector(addCollisionNode)),
+            ("Particle Node",  #selector(addParticleNode)),
+            ("Tile Map Node",  #selector(addTileMapNode)),
+            ("Timer Node",     #selector(addTimerNode)),
         ] as [(String, Selector)] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
@@ -158,6 +161,15 @@ class SidebarViewController: NSViewController,
     }
     @objc private func addCollisionNode() {
         let n = CollisionNode(); n.name = "Trigger"; addNodeToScene(n)
+    }
+    @objc private func addParticleNode() {
+        let n = ParticleNode(); n.name = "Particles"; addNodeToScene(n)
+    }
+    @objc private func addTileMapNode() {
+        let n = TileMapNode(); n.name = "TileMap"; addNodeToScene(n)
+    }
+    @objc private func addTimerNode() {
+        let n = TimerNode(); n.name = "Timer"; addNodeToScene(n)
     }
 
     private func addNodeToScene(_ node: Node) {
@@ -204,6 +216,9 @@ class SidebarViewController: NSViewController,
         case is CameraNode:    name = "camera"
         case is CollisionNode: name = "shield"
         case is AudioNode:     name = "speaker.wave.2"
+        case is TimerNode:     name = "timer"
+        case is ParticleNode:  name = "sparkles"
+        case is TileMapNode:   name = "square.grid.3x3"
         case is TextNode:      name = "textformat"
         case is ShapeNode:     name = "rectangle.fill"
         case is SpriteNode:    name = "photo"

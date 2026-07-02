@@ -29,6 +29,10 @@ import JavaScriptCore
 @objc protocol InputJSExport: JSExport {
     /// JS usage: Input.isActionPressed("move_left")
     func isActionPressed(_ action: String) -> Bool
+
+    /// JS usage: Input.isActionJustPressed("action") — true only on the
+    /// first frame the action goes down (Godot's is_action_just_pressed).
+    func isActionJustPressed(_ action: String) -> Bool
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +46,10 @@ class InputManager: NSObject, InputJSExport {
 
     /// Current state of each named action (true = pressed this frame).
     private var actionStates: [String: Bool] = [:]
+
+    /// Actions that transitioned from released → pressed since the last
+    /// endFrame(). Cleared by the Engine at the end of each step.
+    private var justPressedActions: Set<String> = []
 
     /// Maps hardware keycodes to action name strings.
     /// Multiple keys can map to the same action (e.g., both A and ← → "move_left").
@@ -74,12 +82,15 @@ class InputManager: NSObject, InputJSExport {
     /// Looks up the keycode in the input map and updates the action state.
     func setKeyPressed(_ keyCode: UInt16, isPressed: Bool) {
         guard let action = inputMap[keyCode] else { return }
-        actionStates[action] = isPressed
+        setActionPressed(action, isPressed: isPressed)
     }
 
     /// Directly set an action state by name. Used by virtual joysticks,
     /// gamepad adapters, or AI-driven input injection.
     func setActionPressed(_ action: String, isPressed: Bool) {
+        if isPressed && !(actionStates[action] ?? false) {
+            justPressedActions.insert(action)
+        }
         actionStates[action] = isPressed
     }
 
@@ -91,9 +102,21 @@ class InputManager: NSObject, InputJSExport {
         return actionStates[action] ?? false
     }
 
+    /// Returns true only on the frame the action first went down.
+    @objc func isActionJustPressed(_ action: String) -> Bool {
+        return justPressedActions.contains(action)
+    }
+
+    /// Clears the per-frame "just pressed" edges. The Engine calls this
+    /// at the end of each step.
+    func endFrame() {
+        justPressedActions.removeAll()
+    }
+
     /// Clears all action states. Called when the engine stops playing
     /// so stale key states don't persist into the next play session.
     func clearAllActions() {
         actionStates.removeAll()
+        justPressedActions.removeAll()
     }
 }

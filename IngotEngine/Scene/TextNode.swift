@@ -4,17 +4,24 @@
 //
 //  §4.4 Scene System — Renders text as a textured quad.
 //
-//  TextNode renders a string to an offscreen NSImage using Core Text,
+//  TextNode renders a string into a CGBitmapContext using Core Text,
 //  then uploads it as an MTLTexture. The existing sprite pipeline draws
 //  it like any other textured quad. This avoids the complexity of a
 //  font atlas system — suitable for labels, scores, and UI text.
+//
+//  Uses only CoreText + CoreGraphics (no AppKit/UIKit), so the same
+//  file compiles on macOS, iOS, and tvOS — exported games render text
+//  identically to the editor.
 //
 //  Performance note: the texture is regenerated only when `text`,
 //  `fontSize`, or `textColor` changes, not every frame.
 //
 
-import Cocoa
+import CoreGraphics
+import CoreText
+import Foundation
 import MetalKit
+import simd
 
 class TextNode: SpriteNode {
 
@@ -28,8 +35,8 @@ class TextNode: SpriteNode {
         didSet { if fontSize != oldValue { needsRedraw = true } }
     }
 
-    /// Text color.
-    var textColor: NSColor = .white {
+    /// Text color (RGBA, 0–1).
+    var textColor = simd_float4(1, 1, 1, 1) {
         didSet { needsRedraw = true }
     }
 
@@ -46,30 +53,46 @@ class TextNode: SpriteNode {
     func ensureTexture(device: MTLDevice) {
         guard needsRedraw || texture == nil || cachedDevice !== device else { return }
 
-        let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        let font = CTFontCreateUIFontForLanguage(.system, fontSize, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let cgColor = CGColor(colorSpace: colorSpace,
+                                    components: [CGFloat(textColor.x), CGFloat(textColor.y),
+                                                 CGFloat(textColor.z), CGFloat(textColor.w)]) else {
+            return
+        }
+
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: textColor,
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): cgColor,
         ]
-
-        // Measure the text size.
         let attrString = NSAttributedString(string: text, attributes: attributes)
-        let size = attrString.size()
+        let line = CTLineCreateWithAttributedString(attrString)
 
-        let width = max(Int(ceil(size.width)), 1)
-        let height = max(Int(ceil(size.height)), 1)
+        // Measure the line.
+        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        let advance = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
 
-        // Render text to an NSImage.
-        let image = NSImage(size: NSSize(width: width, height: height))
-        image.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        attrString.draw(at: .zero)
-        image.unlockFocus()
+        let width = max(Int(ceil(advance)), 1)
+        let height = max(Int(ceil(ascent + descent)), 1)
 
-        // Convert NSImage to CGImage to get raw pixel data.
-        guard let cgImage = image.cgImage(forProposedRect: nil,
-                                           context: nil,
-                                           hints: nil) else { return }
+        // Draw into an RGBA bitmap context.
+        guard let context = CGContext(data: nil,
+                                      width: width, height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: width * 4,
+                                      space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return
+        }
+
+        context.setAllowsAntialiasing(true)
+        context.setShouldSmoothFonts(true)
+        context.textPosition = CGPoint(x: 0, y: descent)
+        CTLineDraw(line, context)
+
+        guard let cgImage = context.makeImage() else { return }
 
         // Upload to Metal.
         let loader = MTKTextureLoader(device: device)

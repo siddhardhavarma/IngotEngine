@@ -8,13 +8,16 @@
 //  with GameActions (effects). This is the shared model that both
 //  the visual Event Sheet editor and JavaScript scripts compile down to.
 //
-//  §4.5 Vocabulary (MVP):
-//    Events:  onActionHeld, everyFrame, onStart, onCollision, onSignal
-//    Actions: move, rotate, emitSignal, playSound, setProperty, destroy
+//  §4.5 Vocabulary:
+//    Events:  onActionHeld, onActionJustPressed, everyFrame, onStart,
+//             onCollision, onSignal
+//    Actions: move, rotate, emitSignal, playSound, setProperty,
+//             setVelocity, spawnPrefab, destroy
 //
 
 import AVFoundation
 import Foundation
+import simd
 
 // ---------------------------------------------------------------------------
 // GameEvent — the "when" of a rule (§4.5)
@@ -22,6 +25,9 @@ import Foundation
 enum GameEvent: Equatable {
     /// True while a named input action is held (e.g., "move_left").
     case onActionHeld(String)
+
+    /// True only on the frame the action first goes down (jump, shoot).
+    case onActionJustPressed(String)
 
     /// True every frame — used for continuous behaviors.
     case everyFrame
@@ -32,17 +38,19 @@ enum GameEvent: Equatable {
     /// True the frame a collision is detected on this node.
     case onCollision
 
-    /// True when a named signal is received via the EventBus.
+    /// True the frame a named signal is received via the EventBus.
+    /// Timers, triggers, and other rules emit these signals.
     case onSignal(String)
 
     /// Human-readable label for the event sheet UI.
     var displayName: String {
         switch self {
-        case .onActionHeld(let a): return "Action Held: \(a)"
-        case .everyFrame:          return "Every Frame"
-        case .onStart:             return "On Start"
-        case .onCollision:         return "On Collision"
-        case .onSignal(let s):     return "On Signal: \(s)"
+        case .onActionHeld(let a):        return "Action Held: \(a)"
+        case .onActionJustPressed(let a): return "Action Pressed: \(a)"
+        case .everyFrame:                 return "Every Frame"
+        case .onStart:                    return "On Start"
+        case .onCollision:                return "On Collision"
+        case .onSignal(let s):            return "On Signal: \(s)"
         }
     }
 }
@@ -66,18 +74,28 @@ enum GameAction {
     /// Set a named property on the owner node.
     case setProperty(String, Float)
 
+    /// Set the owner's physics velocity in pixels/second (requires a
+    /// PhysicsBody). Combine with world gravity for jumps: set a big
+    /// +Y velocity once and let gravity pull the body back down.
+    case setVelocity(x: Float, y: Float)
+
+    /// Instantiate a prefab at (x, y) under the scene root.
+    case spawnPrefab(String, x: Float, y: Float)
+
     /// Remove the owner node from the scene tree.
     case destroy
 
     /// Human-readable label for the event sheet UI.
     var displayName: String {
         switch self {
-        case .move(let x, let y):          return "Move (\(x), \(y))"
-        case .rotate(let d):               return "Rotate \(d)°/s"
-        case .emitSignal(let s):           return "Emit \"\(s)\""
-        case .playSound(let f):            return "Play \"\(f)\""
-        case .setProperty(let p, let v):   return "Set \(p) = \(v)"
-        case .destroy:                     return "Destroy"
+        case .move(let x, let y):            return "Move (\(x), \(y))"
+        case .rotate(let d):                 return "Rotate \(d)°/s"
+        case .emitSignal(let s):             return "Emit \"\(s)\""
+        case .playSound(let f):              return "Play \"\(f)\""
+        case .setProperty(let p, let v):     return "Set \(p) = \(v)"
+        case .setVelocity(let x, let y):     return "Velocity (\(x), \(y))"
+        case .spawnPrefab(let n, let x, let y): return "Spawn \"\(n)\" at (\(x), \(y))"
+        case .destroy:                       return "Destroy"
         }
     }
 }
@@ -103,18 +121,43 @@ class Behavior {
     private var startRulesFired = false
 
     /// Tracks whether this node had a collision this frame.
-    /// Set externally by the PhysicsWorld via the EventBus.
+    /// Set externally by the PhysicsWorld.
     var collisionThisFrame = false
+
+    /// Signals received since the last update, drained each frame.
+    /// EventBus connections are wired lazily in start().
+    private var pendingSignals: Set<String> = []
+    private var connectedSignals: Set<String> = []
 
     init(rules: [Rule] = []) {
         self.rules = rules
     }
 
-    func start() {}
+    func start() {
+        connectSignalRules()
+    }
+
+    /// Subscribes to the EventBus for every onSignal rule so those
+    /// events actually fire. Weak capture: a behavior discarded by an
+    /// undo/scene-load leaves only a harmless no-op closure behind.
+    private func connectSignalRules() {
+        for rule in rules {
+            if case .onSignal(let name) = rule.event, !connectedSignals.contains(name) {
+                connectedSignals.insert(name)
+                EventBus.shared.connect(to: name) { [weak self] in
+                    self?.pendingSignals.insert(name)
+                }
+            }
+        }
+    }
 
     func update(deltaTime: CFTimeInterval, input: InputManager) {
         guard let owner = owner else { return }
         let dt = Float(deltaTime)
+
+        // Rules added after start() (by the AI copilot or event sheet)
+        // may introduce new onSignal subscriptions.
+        connectSignalRules()
 
         for rule in rules {
             let triggered: Bool
@@ -122,6 +165,9 @@ class Behavior {
             switch rule.event {
             case .onActionHeld(let action):
                 triggered = input.isActionPressed(action)
+
+            case .onActionJustPressed(let action):
+                triggered = input.isActionJustPressed(action)
 
             case .everyFrame:
                 triggered = true
@@ -133,12 +179,8 @@ class Behavior {
             case .onCollision:
                 triggered = collisionThisFrame
 
-            case .onSignal:
-                // Signal-based events are handled via EventBus connections
-                // set up when the behavior is attached. For the rule
-                // evaluation loop, this is a no-op — the signal fires
-                // the actions directly via the connection.
-                triggered = false
+            case .onSignal(let name):
+                triggered = pendingSignals.contains(name)
             }
 
             guard triggered else { continue }
@@ -149,6 +191,7 @@ class Behavior {
         }
 
         collisionThisFrame = false
+        pendingSignals.removeAll()
     }
 
     private func executeAction(_ action: GameAction, on owner: Node, dt: Float) {
@@ -164,9 +207,15 @@ class Behavior {
             EventBus.shared.emit(name)
 
         case .playSound(let fileName):
-            // Access the audio manager via the singleton pattern.
-            // In a production engine, this would go through the Engine reference.
-            if let url = Bundle.main.url(forResource: fileName, withExtension: nil) {
+            // Try the project's Assets/ first, then the app bundle.
+            var url = Bundle.main.url(forResource: fileName, withExtension: nil)
+            if let assetsDir = ProjectManager.shared.assetsURL {
+                let assetURL = assetsDir.appendingPathComponent(fileName)
+                if FileManager.default.fileExists(atPath: assetURL.path) {
+                    url = assetURL
+                }
+            }
+            if let url = url {
                 let player = try? AVFoundation.AVAudioPlayer(contentsOf: url)
                 player?.play()
             }
@@ -178,11 +227,37 @@ class Behavior {
             case "rotation":  owner.rotation = value
             case "scaleX":    owner.scale.x = value
             case "scaleY":    owner.scale.y = value
+            case "zIndex":    owner.zIndex = Int(value)
             default: break
             }
 
+        case .setVelocity(let x, let y):
+            owner.physicsBody?.velocity = simd_float2(x, y)
+
+        case .spawnPrefab(let name, let x, let y):
+            guard let instance = PrefabLibrary.instantiate(named: name) else { break }
+            instance.position = simd_float2(x, y)
+            owner.sceneRoot.addChild(instance)
+            // Register the new subtree's bodies with the running world.
+            if let world = PhysicsWorld.current {
+                registerBodies(of: instance, with: world)
+            }
+
         case .destroy:
+            // Unregister physics before removal so no orphaned body
+            // keeps colliding at the origin.
+            PhysicsWorld.current?.removeBodies(ownedBy: owner)
             owner.removeFromParent()
+        }
+    }
+
+    private func registerBodies(of node: Node, with world: PhysicsWorld) {
+        if let body = node.physicsBody { world.addBody(body) }
+        if let tileMap = node as? TileMapNode {
+            tileMap.collisionBodies.forEach { world.addBody($0) }
+        }
+        for child in node.children {
+            registerBodies(of: child, with: world)
         }
     }
 }

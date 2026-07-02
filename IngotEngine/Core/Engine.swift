@@ -72,6 +72,10 @@ class Engine {
     // MARK: - Initialization
 
     init() {
+        // Expose this engine's physics world to behaviors (runtime
+        // spawn/destroy need to register/unregister bodies).
+        PhysicsWorld.current = physicsWorld
+
         EventBus.shared.connect(to: "Collision") { [weak self] in
             self?.audio.playSound(named: "bump.wav")
         }
@@ -125,5 +129,9 @@ class Engine {
 
         // 8. Audio — (AVAudioPlayer runs on the OS audio thread;
         //    no per-frame servicing needed)
+
+        // End-of-frame input bookkeeping: "just pressed" edges only
+        // live for the frame in which the key went down.
+        InputManager.shared.endFrame()
     }
 }

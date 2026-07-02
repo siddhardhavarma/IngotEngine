@@ -8,20 +8,16 @@
 //  dispatches asset generation to the AssetDownloadQueue so network
 //  requests never block the main render loop.
 //
+//  The command set covers the FULL engine feature surface — node
+//  creation (sprites, shapes, text, cameras, audio, triggers, timers,
+//  particles, tile maps), transforms, physics, prefabs, behaviors,
+//  scripts, and asset generation — so the copilot can build a playable
+//  game end-to-end from natural-language prompts.
+//
 
 import Foundation
-
-// ---------------------------------------------------------------------------
-// AICommand — a single instruction from the LLM
-// ---------------------------------------------------------------------------
-struct AICommand: Codable {
-    let action: String
-    let targetName: String?
-    let property: String?
-    let value: Float?
-    let prompt: String?
-    let code: String?        // Used by "attachScript" action.
-}
+import Metal
+import simd
 
 // ---------------------------------------------------------------------------
 // AIEngineBridge
@@ -31,45 +27,105 @@ class AIEngineBridge {
     /// The background download queue for asset generation.
     var downloadQueue: AssetDownloadQueue?
 
+    /// Provides the default texture for AI-created sprites/tile maps
+    /// (injected by the editor; nil leaves textures unassigned).
+    var defaultTextureProvider: (() -> Any?)?
+
     // MARK: - Prompt Building
 
     func buildPrompt(userText: String, currentScene: Scene) -> String {
         let sceneJSON = SceneSerializer.serialize(currentScene)
+        let prefabs = PrefabLibrary.list()
+        let prefabList = prefabs.isEmpty ? "(none saved yet)" : prefabs.joined(separator: ", ")
 
         return """
         [System Prompt]
-        You are an AI game engine copilot for Ingot Engine.
+        You are an AI game engine copilot for Ingot Engine, a 2D engine targeting iPhone/iPad/Apple TV.
+        Coordinate system: +X right, +Y UP, positions in pixels. The design canvas is roughly 800x600.
+
         The current scene state is:
         \(sceneJSON)
 
-        You must respond ONLY with a JSON array of commands. Each command is an object.
+        Saved prefabs: \(prefabList)
+
+        You must respond ONLY with a JSON array of commands. Each command is an object with an "action" key.
 
         Supported actions:
-        1. "updateProperty" — modify a node's transform.
-           Required: "targetName", "property" (positionX|positionY|rotation|scaleX|scaleY), "value" (Float)
 
-        2. "generateTexture" — generate an image and apply it to a sprite.
-           Required: "targetName" (must be a SpriteNode), "prompt" (image description)
+        1. "createNode" — add a node to the scene.
+           Required: "type" (Node|SpriteNode|ShapeNode|TextNode|CameraNode|AudioNode|CollisionNode|TimerNode|ParticleNode|TileMapNode), "name"
+           Optional: "parentName" (default: scene root), "x", "y", "zIndex", "groups" (array of strings)
+           Type extras — ShapeNode: "color" [r,g,b,a 0-1], "width", "height". TextNode: "text", "fontSize". AudioNode: "soundFile", "playOnStart", "loops". CollisionNode: "triggerSignal", "width", "height". TimerNode: "waitTime", "oneShot", "autostart", "signal". ParticleNode/TileMapNode: create first, then configure with the commands below.
 
-        3. "generateSound" — generate a sound effect and play it.
-           Required: "prompt" (sound description)
+        2. "deleteNode" — remove a node (and its children).
+           Required: "targetName"
 
-        4. "attachScript" — create a lifecycle JavaScript file and attach it to a node.
-           Required: "targetName", "code" (JavaScript string using lifecycle format)
-           The code MUST use this lifecycle pattern:
-           var Script = { start: function(node) {}, update: function(node, dt, time) {} };
-           Available in update: node.x, node.y, node.name, node.setFrame(), dt, time, Input.isActionPressed("action_name")
+        3. "updateProperty" — set a numeric property on a node.
+           Required: "targetName", "property" (positionX|positionY|rotation|scaleX|scaleY|zIndex|zoom|visible), "value" (number; visible: 1/0)
 
-        5. "addRule" — add a visual-scripting rule to a node's event sheet.
-           Required: "targetName", "event" (object), "actions" (array of objects)
-           Event types: {"type":"onActionHeld","action":"move_left"}, {"type":"everyFrame"}, {"type":"onStart"}, {"type":"onCollision"}, {"type":"onSignal","signal":"name"}
-           Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"destroy"}
+        4. "setColor" — tint a node. Sets fill color on ShapeNode, modulate tint on other sprites/text.
+           Required: "targetName", "color" [r,g,b,a 0-1]
+
+        5. "setText" — change a TextNode.
+           Required: "targetName", "text". Optional: "fontSize"
+
+        6. "addPhysicsBody" — make a node collide.
+           Required: "targetName", "sizeX", "sizeY", "isDynamic" (true = moves, false = wall/floor)
+           Optional: "gravityScale" (0 = top-down, 1 = platformer), "collisionLayer", "collisionMask"
+
+        7. "setVelocity" — set a node's physics velocity in px/s. Required: "targetName", "x", "y"
+
+        8. "setGravity" — set world gravity in px/s². Required: "x", "y" (platformer: x=0, y=-980; top-down: 0,0)
+
+        9. "configureParticles" — set up a ParticleNode.
+           Required: "targetName". Optional: "amount", "lifetime", "oneShot", "direction" (degrees, 90=up), "spread", "initialVelocity", "gravityX", "gravityY", "startScale", "endScale", "startColor" [r,g,b,a], "endColor" [r,g,b,a], "emitting"
+
+        10. "configureTileMap" — set up a TileMapNode's atlas and collision.
+            Required: "targetName". Optional: "tileWidth", "tileHeight", "atlasColumns", "atlasRows", "solidTiles" (array of tile indices that block movement)
+
+        11. "paintTiles" — place tiles on a TileMapNode.
+            Required: "targetName", and either "tiles" (array of [x, y, tileIndex] triples; tileIndex -1 erases) or a fill rect: "x", "y", "width", "height", "tileIndex"
+
+        12. "setCameraFollow" — make a camera track a node smoothly.
+            Required: "targetName" (the camera), "followTarget" (node name). Optional: "smoothing" (0 = rigid, ~5 = smooth chase)
+
+        13. "configureTimer" — set up a TimerNode.
+            Required: "targetName". Optional: "waitTime" (seconds), "oneShot", "autostart", "signal" (emitted on timeout)
+
+        14. "savePrefab" — save a node subtree as a reusable prefab. Required: "targetName", "prefabName"
+
+        15. "spawnPrefab" — instantiate a saved prefab. Required: "prefabName", "x", "y". Optional: "name", "parentName"
+
+        16. "addToGroup" — tag a node with a group. Required: "targetName", "group"
+
+        17. "addRule" — add a visual-scripting rule to a node's event sheet.
+            Required: "targetName", "event" (object), "actions" (array of objects)
+            Event types: {"type":"onActionHeld","action":"move_left"}, {"type":"onActionJustPressed","action":"action"}, {"type":"everyFrame"}, {"type":"onStart"}, {"type":"onCollision"}, {"type":"onSignal","signal":"name"}
+            Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"setVelocity","x":0,"y":600}, {"type":"spawnPrefab","prefab":"Enemy","x":100,"y":300}, {"type":"destroy"}
+            Input actions available: move_left, move_right, move_up, move_down, action (Space / touch button).
+            Timers emit their "signal" on timeout — pair a TimerNode with onSignal rules for spawn waves.
+            Triggers (CollisionNode) emit their "triggerSignal" when something enters them.
+            Collisions also emit "Collision:<NodeName>" signals for per-node reactions.
+
+        18. "attachScript" — create a lifecycle JavaScript file and attach it to a node.
+            Required: "targetName", "code" (JavaScript string using lifecycle format)
+            The code MUST use this lifecycle pattern:
+            var Script = { start: function(node) {}, update: function(node, dt, time) {} };
+            Node API: node.x, node.y, node.rotationDegrees, node.scaleX, node.scaleY, node.zIndexJS, node.visible, node.name, node.jsZoom (cameras), node.setFrame(cols,rows,col,row), node.getChild(name), node.emitSignal(name), node.setVelocity(x,y), node.spawn(prefabName,x,y), node.destroy()
+            Input API: Input.isActionPressed(name), Input.isActionJustPressed(name)
+
+        19. "generateTexture" — AI-generate an image and apply it to a sprite.
+            Required: "targetName" (a SpriteNode), "prompt" (image description)
+
+        20. "generateSound" — AI-generate a sound effect and play it.
+            Required: "prompt" (sound description)
 
         Example response:
         [
-          {"action": "updateProperty", "targetName": "Player", "property": "positionX", "value": 300.0},
-          {"action": "addRule", "targetName": "Player", "event": {"type": "onCollision"}, "actions": [{"type": "emitSignal", "name": "PlayerHit"}]},
-          {"action": "attachScript", "targetName": "Player", "code": "var Script = { start: function(node) {}, update: function(node, dt, time) { node.x += 100 * dt; } };"}
+          {"action": "createNode", "type": "ShapeNode", "name": "Ground", "x": 400, "y": 50, "color": [0.4, 0.3, 0.2, 1], "width": 800, "height": 60},
+          {"action": "addPhysicsBody", "targetName": "Ground", "sizeX": 800, "sizeY": 60, "isDynamic": false},
+          {"action": "setGravity", "x": 0, "y": -980},
+          {"action": "addRule", "targetName": "Player", "event": {"type": "onActionJustPressed", "action": "action"}, "actions": [{"type": "setVelocity", "x": 0, "y": 600}]}
         ]
 
         Do not include any text outside the JSON array. No markdown, no explanation.
@@ -106,16 +162,9 @@ class AIEngineBridge {
     /// Extracts a clean JSON array from an LLM response that may contain
     /// markdown code fences, conversational prose, or other wrapping.
     ///
-    /// LLMs frequently wrap JSON in markdown even when told not to:
-    ///
-    ///   Here are the commands:
-    ///   ```json
-    ///   [{"action": "updateProperty", ...}]
-    ///   ```
-    ///   Let me know if you need anything else!
-    ///
+    /// LLMs frequently wrap JSON in markdown even when told not to.
     /// This function finds the first '[' and last ']' and extracts
-    /// everything between them (inclusive), discarding all surrounding text.
+    /// everything between them (inclusive), discarding surrounding text.
     private func stripToJSON(_ text: String) -> String {
         // Fast path: already clean JSON.
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -184,7 +233,7 @@ class AIEngineBridge {
 
         let body: [String: Any] = [
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1024,
+            "max_tokens": 4096,
             "temperature": 0.0,
             "system": "Respond ONLY with a JSON array of commands. No markdown, no prose.",
             "messages": [
@@ -236,56 +285,184 @@ class AIEngineBridge {
 
     // MARK: - Command Execution
 
+    /// Parses the LLM's JSON array and executes each command in order.
+    /// Commands are untyped dictionaries — every handler validates its
+    /// own fields, so one malformed command never aborts the batch.
     func executeCommands(jsonString: String,
                          in scene: Scene,
                          settings: AISettings,
                          onLog: @escaping @MainActor (String) -> Void) {
 
-        guard let data = jsonString.data(using: .utf8) else {
-            onLog("Error: Could not encode JSON string to data.")
-            return
-        }
-
-        let commands: [AICommand]
-        do {
-            commands = try JSONDecoder().decode([AICommand].self, from: data)
-        } catch {
-            onLog("Error: Could not decode AI commands: \(error.localizedDescription)")
+        guard let data = jsonString.data(using: .utf8),
+              let commands = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            onLog("Error: Could not decode AI commands as a JSON array.")
             return
         }
 
         for command in commands {
-            switch command.action {
-            case "updateProperty":
-                executeUpdateProperty(command, in: scene, onLog: onLog)
-            case "generateTexture":
-                dispatchGenerateTexture(command, in: scene, settings: settings, onLog: onLog)
-            case "generateSound":
-                dispatchGenerateSound(command, settings: settings, onLog: onLog)
-            case "attachScript":
-                executeAttachScript(command, in: scene, onLog: onLog)
-            case "addRule":
-                executeAddRule(rawJSON: jsonString, commandIndex: commands.firstIndex(where: { $0.action == "addRule" && $0.targetName == command.targetName }) ?? 0, in: scene, onLog: onLog)
+            let action = command["action"] as? String ?? ""
+            switch action {
+            case "createNode":        executeCreateNode(command, in: scene, onLog: onLog)
+            case "deleteNode":        executeDeleteNode(command, in: scene, onLog: onLog)
+            case "updateProperty":    executeUpdateProperty(command, in: scene, onLog: onLog)
+            case "setColor":          executeSetColor(command, in: scene, onLog: onLog)
+            case "setText":           executeSetText(command, in: scene, onLog: onLog)
+            case "addPhysicsBody":    executeAddPhysicsBody(command, in: scene, onLog: onLog)
+            case "setVelocity":       executeSetVelocity(command, in: scene, onLog: onLog)
+            case "setGravity":        executeSetGravity(command, onLog: onLog)
+            case "configureParticles": executeConfigureParticles(command, in: scene, onLog: onLog)
+            case "configureTileMap":  executeConfigureTileMap(command, in: scene, onLog: onLog)
+            case "paintTiles":        executePaintTiles(command, in: scene, onLog: onLog)
+            case "setCameraFollow":   executeSetCameraFollow(command, in: scene, onLog: onLog)
+            case "configureTimer":    executeConfigureTimer(command, in: scene, onLog: onLog)
+            case "savePrefab":        executeSavePrefab(command, in: scene, onLog: onLog)
+            case "spawnPrefab":       executeSpawnPrefab(command, in: scene, onLog: onLog)
+            case "addToGroup":        executeAddToGroup(command, in: scene, onLog: onLog)
+            case "addRule":           executeAddRule(command, in: scene, onLog: onLog)
+            case "attachScript":      executeAttachScript(command, in: scene, onLog: onLog)
+            case "generateTexture":   dispatchGenerateTexture(command, in: scene, settings: settings, onLog: onLog)
+            case "generateSound":     dispatchGenerateSound(command, settings: settings, onLog: onLog)
             default:
-                onLog("Warning: Unknown action \"\(command.action)\".")
+                onLog("Warning: Unknown action \"\(action)\".")
             }
         }
     }
 
-    // MARK: - Synchronous Command Handlers
+    // MARK: - Field helpers
 
-    private func executeUpdateProperty(_ command: AICommand,
-                                       in scene: Scene,
-                                       onLog: @escaping (String) -> Void) {
-        guard let targetName = command.targetName,
-              let property = command.property,
-              let value = command.value else {
-            onLog("Error: updateProperty requires targetName, property, and value.")
+    private func float(_ dict: [String: Any], _ key: String) -> Float? {
+        if let d = dict[key] as? Double { return Float(d) }
+        if let i = dict[key] as? Int { return Float(i) }
+        return nil
+    }
+
+    private func int(_ dict: [String: Any], _ key: String) -> Int? {
+        if let i = dict[key] as? Int { return i }
+        if let d = dict[key] as? Double { return Int(d) }
+        return nil
+    }
+
+    private func color4(_ dict: [String: Any], _ key: String) -> simd_float4? {
+        guard let c = dict[key] as? [Double], c.count == 4 else { return nil }
+        return simd_float4(Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]))
+    }
+
+    private func target(_ dict: [String: Any], in scene: Scene,
+                        onLog: (String) -> Void) -> Node? {
+        guard let name = dict["targetName"] as? String else {
+            onLog("Error: Command requires targetName.")
+            return nil
+        }
+        guard let node = findNode(named: name, in: scene.rootNode) else {
+            onLog("Warning: Node \"\(name)\" not found.")
+            return nil
+        }
+        return node
+    }
+
+    // MARK: - Node lifecycle commands
+
+    private func executeCreateNode(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
+        guard let type = cmd["type"] as? String,
+              let name = cmd["name"] as? String else {
+            onLog("Error: createNode requires type and name.")
             return
         }
 
-        guard let node = findNode(named: targetName, in: scene.rootNode) else {
-            onLog("Warning: Node \"\(targetName)\" not found.")
+        let node: Node
+        switch type {
+        case "SpriteNode":    node = SpriteNode()
+        case "ShapeNode":     node = ShapeNode()
+        case "TextNode":      node = TextNode()
+        case "CameraNode":    node = CameraNode()
+        case "AudioNode":     node = AudioNode()
+        case "CollisionNode": node = CollisionNode()
+        case "TimerNode":     node = TimerNode()
+        case "ParticleNode":  node = ParticleNode()
+        case "TileMapNode":   node = TileMapNode()
+        case "Node":          node = Node()
+        default:
+            onLog("Error: Unknown node type \"\(type)\".")
+            return
+        }
+
+        node.name = name
+        if let x = float(cmd, "x") { node.position.x = x }
+        if let y = float(cmd, "y") { node.position.y = y }
+        if let z = int(cmd, "zIndex") { node.zIndex = z }
+        if let groups = cmd["groups"] as? [String] { node.groups = Set(groups) }
+
+        // Type extras.
+        if let shape = node as? ShapeNode {
+            if let c = color4(cmd, "color") { shape.color = (c.x, c.y, c.z, c.w) }
+            if let w = float(cmd, "width") { shape.shapeWidth = w }
+            if let h = float(cmd, "height") { shape.shapeHeight = h }
+        }
+        if let text = node as? TextNode {
+            if let t = cmd["text"] as? String { text.text = t }
+            if let s = float(cmd, "fontSize") { text.fontSize = CGFloat(s) }
+        }
+        if let audio = node as? AudioNode {
+            if let f = cmd["soundFile"] as? String { audio.soundFile = f }
+            if let p = cmd["playOnStart"] as? Bool { audio.playOnStart = p }
+            if let l = cmd["loops"] as? Bool { audio.loops = l }
+        }
+        if let trigger = node as? CollisionNode {
+            if let s = cmd["triggerSignal"] as? String { trigger.triggerSignal = s }
+            if let w = float(cmd, "width"), let h = float(cmd, "height") {
+                trigger.triggerSize = simd_float2(w, h)
+            }
+        }
+        if let timer = node as? TimerNode {
+            if let w = float(cmd, "waitTime") { timer.waitTime = w }
+            if let o = cmd["oneShot"] as? Bool { timer.oneShot = o }
+            if let a = cmd["autostart"] as? Bool { timer.autostart = a }
+            if let s = cmd["signal"] as? String { timer.timeoutSignal = s }
+        }
+
+        // Sprites and tile maps need a texture to be visible — give
+        // them the editor's default so AI creations show up instantly.
+        if let sprite = node as? SpriteNode, sprite.texture == nil,
+           !(node is ShapeNode), !(node is TextNode) {
+            sprite.texture = defaultTextureProvider?() as? (any MTLTexture)
+        }
+        if let tileMap = node as? TileMapNode, tileMap.texture == nil {
+            tileMap.texture = defaultTextureProvider?() as? (any MTLTexture)
+        }
+
+        let parent: Node
+        if let parentName = cmd["parentName"] as? String,
+           let found = findNode(named: parentName, in: scene.rootNode) {
+            parent = found
+        } else {
+            parent = scene.rootNode
+        }
+        parent.addChild(node)
+
+        onLog("Created \(type) \"\(name)\" under \"\(parent.name)\".")
+    }
+
+    private func executeDeleteNode(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog) else { return }
+        guard node !== scene.rootNode else {
+            onLog("Error: Cannot delete the scene root.")
+            return
+        }
+        PhysicsWorld.current?.removeBodies(ownedBy: node)
+        node.removeFromParent()
+        onLog("Deleted \"\(node.name)\".")
+    }
+
+    // MARK: - Property commands
+
+    private func executeUpdateProperty(_ cmd: [String: Any], in scene: Scene,
+                                       onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let property = cmd["property"] as? String,
+              let value = float(cmd, "value") else {
+            onLog("Error: updateProperty requires targetName, property, and value.")
             return
         }
 
@@ -295,6 +472,14 @@ class AIEngineBridge {
         case "rotation":  node.rotation = value
         case "scaleX":    node.scale.x = value
         case "scaleY":    node.scale.y = value
+        case "zIndex":    node.zIndex = Int(value)
+        case "visible":   node.isEnabled = value != 0
+        case "zoom":
+            guard let camera = node as? CameraNode else {
+                onLog("Warning: \"\(node.name)\" is not a camera.")
+                return
+            }
+            camera.zoom = value
         default:
             onLog("Warning: Unknown property \"\(property)\".")
             return
@@ -303,22 +488,304 @@ class AIEngineBridge {
         onLog("Set \"\(node.name)\".\(property) = \(value)")
     }
 
-    private func executeAttachScript(_ command: AICommand,
-                                      in scene: Scene,
-                                      onLog: @escaping (String) -> Void) {
-        guard let targetName = command.targetName,
-              let code = command.code else {
+    private func executeSetColor(_ cmd: [String: Any], in scene: Scene,
+                                 onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let c = color4(cmd, "color") else {
+            onLog("Error: setColor requires targetName and color [r,g,b,a].")
+            return
+        }
+
+        if let shape = node as? ShapeNode {
+            shape.color = (c.x, c.y, c.z, c.w)
+        } else if let text = node as? TextNode {
+            text.textColor = c
+        } else if let sprite = node as? SpriteNode {
+            sprite.modulate = c
+        } else {
+            onLog("Warning: \"\(node.name)\" has nothing to color.")
+            return
+        }
+        onLog("Colored \"\(node.name)\".")
+    }
+
+    private func executeSetText(_ cmd: [String: Any], in scene: Scene,
+                                onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let text = node as? TextNode,
+              let value = cmd["text"] as? String else {
+            onLog("Error: setText requires targetName (a TextNode) and text.")
+            return
+        }
+        text.text = value
+        if let size = float(cmd, "fontSize") { text.fontSize = CGFloat(size) }
+        onLog("Set \"\(node.name)\" text to \"\(value)\".")
+    }
+
+    // MARK: - Physics commands
+
+    private func executeAddPhysicsBody(_ cmd: [String: Any], in scene: Scene,
+                                       onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let sizeX = float(cmd, "sizeX"),
+              let sizeY = float(cmd, "sizeY") else {
+            onLog("Error: addPhysicsBody requires targetName, sizeX, sizeY.")
+            return
+        }
+
+        let isDynamic = cmd["isDynamic"] as? Bool ?? true
+        let body: PhysicsBody
+        if let existing = node.physicsBody {
+            body = existing
+            body.size = simd_float2(sizeX, sizeY)
+            body.isDynamic = isDynamic
+        } else {
+            body = PhysicsBody(size: simd_float2(sizeX, sizeY), isDynamic: isDynamic)
+            node.addPhysicsBody(body)
+        }
+        if let g = float(cmd, "gravityScale") { body.gravityScale = g }
+        if let l = int(cmd, "collisionLayer") { body.collisionLayer = UInt32(truncatingIfNeeded: l) }
+        if let m = int(cmd, "collisionMask") { body.collisionMask = UInt32(truncatingIfNeeded: m) }
+
+        onLog("Physics body on \"\(node.name)\": \(sizeX)×\(sizeY), \(isDynamic ? "dynamic" : "static").")
+    }
+
+    private func executeSetVelocity(_ cmd: [String: Any], in scene: Scene,
+                                    onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let x = float(cmd, "x"), let y = float(cmd, "y") else {
+            onLog("Error: setVelocity requires targetName, x, y.")
+            return
+        }
+        guard let body = node.physicsBody else {
+            onLog("Warning: \"\(node.name)\" has no physics body.")
+            return
+        }
+        body.velocity = simd_float2(x, y)
+        onLog("Set \"\(node.name)\" velocity to (\(x), \(y)).")
+    }
+
+    private func executeSetGravity(_ cmd: [String: Any], onLog: (String) -> Void) {
+        guard let x = float(cmd, "x"), let y = float(cmd, "y") else {
+            onLog("Error: setGravity requires x and y.")
+            return
+        }
+        guard let world = PhysicsWorld.current else {
+            onLog("Warning: No physics world available.")
+            return
+        }
+        world.gravity = simd_float2(x, y)
+        onLog("World gravity set to (\(x), \(y)).")
+    }
+
+    // MARK: - Particles / TileMap / Camera / Timer commands
+
+    private func executeConfigureParticles(_ cmd: [String: Any], in scene: Scene,
+                                           onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let particles = node as? ParticleNode else {
+            onLog("Error: configureParticles requires targetName (a ParticleNode).")
+            return
+        }
+
+        if let v = int(cmd, "amount") { particles.amount = v }
+        if let v = float(cmd, "lifetime") { particles.lifetime = v }
+        if let v = cmd["oneShot"] as? Bool { particles.oneShot = v }
+        if let v = float(cmd, "direction") { particles.direction = v }
+        if let v = float(cmd, "spread") { particles.spread = v }
+        if let v = float(cmd, "initialVelocity") { particles.initialVelocity = v }
+        if let gx = float(cmd, "gravityX"), let gy = float(cmd, "gravityY") {
+            particles.gravity = simd_float2(gx, gy)
+        }
+        if let v = float(cmd, "startScale") { particles.startScale = v }
+        if let v = float(cmd, "endScale") { particles.endScale = v }
+        if let c = color4(cmd, "startColor") { particles.startColor = c }
+        if let c = color4(cmd, "endColor") { particles.endColor = c }
+        if let v = cmd["emitting"] as? Bool {
+            particles.emitting = v
+            if v { particles.restart() }
+        }
+
+        onLog("Configured particles on \"\(node.name)\".")
+    }
+
+    private func executeConfigureTileMap(_ cmd: [String: Any], in scene: Scene,
+                                         onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let tileMap = node as? TileMapNode else {
+            onLog("Error: configureTileMap requires targetName (a TileMapNode).")
+            return
+        }
+
+        if let v = float(cmd, "tileWidth") { tileMap.tileWidth = v }
+        if let v = float(cmd, "tileHeight") { tileMap.tileHeight = v }
+        if let v = int(cmd, "atlasColumns") { tileMap.atlasColumns = v }
+        if let v = int(cmd, "atlasRows") { tileMap.atlasRows = v }
+        if let solids = cmd["solidTiles"] as? [Int] { tileMap.solidTiles = Set(solids) }
+
+        onLog("Configured tile map \"\(node.name)\".")
+    }
+
+    private func executePaintTiles(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let tileMap = node as? TileMapNode else {
+            onLog("Error: paintTiles requires targetName (a TileMapNode).")
+            return
+        }
+
+        if let triples = cmd["tiles"] as? [[Int]] {
+            var painted = 0
+            for triple in triples where triple.count == 3 {
+                tileMap.setTile(x: triple[0], y: triple[1], tileIndex: triple[2])
+                painted += 1
+            }
+            onLog("Painted \(painted) tiles on \"\(node.name)\".")
+        } else if let x = int(cmd, "x"), let y = int(cmd, "y"),
+                  let w = int(cmd, "width"), let h = int(cmd, "height"),
+                  let index = int(cmd, "tileIndex") {
+            tileMap.fillRect(x: x, y: y, width: w, height: h, tileIndex: index)
+            onLog("Filled \(w)×\(h) tiles on \"\(node.name)\".")
+        } else {
+            onLog("Error: paintTiles needs \"tiles\" triples or x/y/width/height/tileIndex.")
+        }
+    }
+
+    private func executeSetCameraFollow(_ cmd: [String: Any], in scene: Scene,
+                                        onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let camera = node as? CameraNode,
+              let followTarget = cmd["followTarget"] as? String else {
+            onLog("Error: setCameraFollow requires targetName (a CameraNode) and followTarget.")
+            return
+        }
+        camera.followTargetName = followTarget
+        camera.followSmoothing = float(cmd, "smoothing") ?? 0
+        onLog("Camera \"\(node.name)\" now follows \"\(followTarget)\".")
+    }
+
+    private func executeConfigureTimer(_ cmd: [String: Any], in scene: Scene,
+                                       onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let timer = node as? TimerNode else {
+            onLog("Error: configureTimer requires targetName (a TimerNode).")
+            return
+        }
+        if let w = float(cmd, "waitTime") { timer.waitTime = w }
+        if let o = cmd["oneShot"] as? Bool { timer.oneShot = o }
+        if let a = cmd["autostart"] as? Bool { timer.autostart = a }
+        if let s = cmd["signal"] as? String { timer.timeoutSignal = s }
+        onLog("Configured timer \"\(node.name)\" (\(timer.waitTime)s → \"\(timer.timeoutSignal)\").")
+    }
+
+    // MARK: - Prefab commands
+
+    private func executeSavePrefab(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let prefabName = cmd["prefabName"] as? String else {
+            onLog("Error: savePrefab requires targetName and prefabName.")
+            return
+        }
+        if PrefabLibrary.save(node, named: prefabName) {
+            onLog("Saved \"\(node.name)\" as prefab \"\(prefabName)\".")
+        } else {
+            onLog("Error: Could not save prefab \"\(prefabName)\".")
+        }
+    }
+
+    private func executeSpawnPrefab(_ cmd: [String: Any], in scene: Scene,
+                                    onLog: (String) -> Void) {
+        guard let prefabName = cmd["prefabName"] as? String,
+              let x = float(cmd, "x"), let y = float(cmd, "y") else {
+            onLog("Error: spawnPrefab requires prefabName, x, y.")
+            return
+        }
+        guard let instance = PrefabLibrary.instantiate(named: prefabName) else {
+            onLog("Warning: Prefab \"\(prefabName)\" not found.")
+            return
+        }
+
+        if let name = cmd["name"] as? String { instance.name = name }
+        instance.position = simd_float2(x, y)
+
+        // Fresh instances have no textures (not JSON-serializable).
+        assignDefaultTextures(to: instance)
+
+        let parent: Node
+        if let parentName = cmd["parentName"] as? String,
+           let found = findNode(named: parentName, in: scene.rootNode) {
+            parent = found
+        } else {
+            parent = scene.rootNode
+        }
+        parent.addChild(instance)
+
+        onLog("Spawned prefab \"\(prefabName)\" as \"\(instance.name)\" at (\(x), \(y)).")
+    }
+
+    private func assignDefaultTextures(to node: Node) {
+        if let sprite = node as? SpriteNode, sprite.texture == nil,
+           !(node is ShapeNode), !(node is TextNode) {
+            sprite.texture = defaultTextureProvider?() as? (any MTLTexture)
+        }
+        if let tileMap = node as? TileMapNode, tileMap.texture == nil {
+            tileMap.texture = defaultTextureProvider?() as? (any MTLTexture)
+        }
+        for child in node.children {
+            assignDefaultTextures(to: child)
+        }
+    }
+
+    private func executeAddToGroup(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let group = cmd["group"] as? String else {
+            onLog("Error: addToGroup requires targetName and group.")
+            return
+        }
+        node.groups.insert(group)
+        onLog("Added \"\(node.name)\" to group \"\(group)\".")
+    }
+
+    // MARK: - Behavior / script commands
+
+    private func executeAddRule(_ cmd: [String: Any], in scene: Scene,
+                                onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog) else { return }
+
+        guard let eventDict = cmd["event"] as? [String: Any],
+              let actionDicts = cmd["actions"] as? [[String: Any]] else {
+            onLog("Error: addRule requires event and actions.")
+            return
+        }
+
+        let ruleDict: [String: Any] = ["event": eventDict, "actions": actionDicts]
+        guard let newRule = SceneDeserializer.buildRule(from: ruleDict) else {
+            onLog("Error: Could not build rule from AI command.")
+            return
+        }
+
+        // Add the rule to the node's first non-script behavior.
+        if let behavior = node.behaviors.first(where: { !($0 is ScriptBehavior) }) {
+            behavior.rules.append(newRule)
+        } else {
+            node.addBehavior(Behavior(rules: [newRule]))
+        }
+
+        onLog("Added rule to \"\(node.name)\": \(newRule.event.displayName) → \(newRule.actions.map { $0.displayName }.joined(separator: ", "))")
+    }
+
+    private func executeAttachScript(_ cmd: [String: Any], in scene: Scene,
+                                     onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let code = cmd["code"] as? String else {
             onLog("Error: attachScript requires targetName and code.")
             return
         }
 
-        guard let node = findNode(named: targetName, in: scene.rootNode) else {
-            onLog("Warning: Node \"\(targetName)\" not found.")
-            return
-        }
-
         // Generate a script filename from the node name.
-        let scriptName = "\(targetName)_AI_Script.js"
+        let scriptName = "\(node.name)_AI_Script.js"
 
         // Write the code to a .js file in the project's Scripts/ folder.
         guard let scriptsDir = ProjectManager.shared.scriptsURL else {
@@ -342,76 +809,14 @@ class AIEngineBridge {
         onLog("Created \(scriptName) and attached to \"\(node.name)\".")
     }
 
-    /// Parses an "addRule" command from the raw JSON (since Codable can't
-    /// handle the nested event/actions dictionaries) and adds it to the
-    /// target node's behavior.
-    private func executeAddRule(rawJSON: String,
-                                commandIndex: Int,
-                                in scene: Scene,
-                                onLog: @escaping (String) -> Void) {
-        // Re-parse the raw JSON to get the untyped dictionaries.
-        guard let data = rawJSON.data(using: .utf8),
-              let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            onLog("Error: Could not re-parse JSON for addRule.")
-            return
-        }
-
-        // Find the addRule command in the array.
-        let ruleCmds = array.filter { ($0["action"] as? String) == "addRule" }
-        guard commandIndex < ruleCmds.count else {
-            onLog("Error: addRule command index out of bounds.")
-            return
-        }
-
-        let cmdDict = ruleCmds[commandIndex]
-        guard let targetName = cmdDict["targetName"] as? String else {
-            onLog("Error: addRule requires targetName.")
-            return
-        }
-
-        guard let node = findNode(named: targetName, in: scene.rootNode) else {
-            onLog("Warning: Node \"\(targetName)\" not found.")
-            return
-        }
-
-        guard let eventDict = cmdDict["event"] as? [String: Any],
-              let actionDicts = cmdDict["actions"] as? [[String: Any]] else {
-            onLog("Error: addRule requires event and actions.")
-            return
-        }
-
-        // Use the SceneDeserializer's rule-building logic (it's already tested).
-        // We need to call the private methods through a workaround — build the
-        // rule dict in the format the deserializer expects.
-        let ruleDict: [String: Any] = ["event": eventDict, "actions": actionDicts]
-        guard let ruleData = try? JSONSerialization.data(withJSONObject: ruleDict),
-              let ruleJSON = String(data: ruleData, encoding: .utf8),
-              let fullJSON = "{ \"rootNode\": { \"type\": \"Node\", \"name\": \"temp\", \"positionX\": 0, \"positionY\": 0, \"scaleX\": 1, \"scaleY\": 1, \"rotation\": 0, \"enabled\": true, \"behaviors\": [{ \"type\": \"RuleBehavior\", \"rules\": [\(ruleJSON)] }], \"children\": [] } }".data(using: .utf8),
-              let tempRoot = SceneDeserializer.deserialize(jsonString: String(data: fullJSON, encoding: .utf8)!),
-              let tempBehavior = tempRoot.behaviors.first,
-              let newRule = tempBehavior.rules.first else {
-            onLog("Error: Could not build rule from AI command.")
-            return
-        }
-
-        // Add the rule to the node's first non-script behavior.
-        if let behavior = node.behaviors.first(where: { !($0 is ScriptBehavior) }) {
-            behavior.rules.append(newRule)
-        } else {
-            node.addBehavior(Behavior(rules: [newRule]))
-        }
-
-        onLog("Added rule to \"\(targetName)\": \(newRule.event.displayName) → \(newRule.actions.map { $0.displayName }.joined(separator: ", "))")
-    }
-
     // MARK: - Async Command Dispatchers
 
-    private func dispatchGenerateTexture(_ command: AICommand,
+    private func dispatchGenerateTexture(_ cmd: [String: Any],
                                          in scene: Scene,
                                          settings: AISettings,
                                          onLog: @escaping @MainActor (String) -> Void) {
-        guard let targetName = command.targetName,
-              let imagePrompt = command.prompt else {
+        guard let targetName = cmd["targetName"] as? String,
+              let imagePrompt = cmd["prompt"] as? String else {
             onLog("Error: generateTexture requires targetName and prompt.")
             return
         }
@@ -436,10 +841,10 @@ class AIEngineBridge {
         )
     }
 
-    private func dispatchGenerateSound(_ command: AICommand,
+    private func dispatchGenerateSound(_ cmd: [String: Any],
                                        settings: AISettings,
                                        onLog: @escaping @MainActor (String) -> Void) {
-        guard let soundPrompt = command.prompt else {
+        guard let soundPrompt = cmd["prompt"] as? String else {
             onLog("Error: generateSound requires a prompt.")
             return
         }

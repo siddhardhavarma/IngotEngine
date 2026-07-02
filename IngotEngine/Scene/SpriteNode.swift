@@ -26,6 +26,10 @@ class SpriteNode: Node {
     /// Default (0, 0, 1, 1) shows the entire texture.
     var uvRect: simd_float4 = simd_float4(0, 0, 1, 1)
 
+    /// RGBA tint multiplied over the texture (Godot's modulate).
+    /// (1, 1, 1, 1) = unchanged; alpha < 1 fades the sprite out.
+    var modulate = simd_float4(1, 1, 1, 1)
+
     /// Whether this sprite is currently showing a placeholder while
     /// waiting for a real texture to download.
     var isLoadingTexture: Bool = false

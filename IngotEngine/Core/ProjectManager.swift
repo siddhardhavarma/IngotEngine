@@ -33,6 +33,7 @@ class ProjectManager {
     var assetsURL: URL? { currentProjectURL?.appendingPathComponent("Assets") }
     var scenesURL: URL? { currentProjectURL?.appendingPathComponent("Scenes") }
     var scriptsURL: URL? { currentProjectURL?.appendingPathComponent("Scripts") }
+    var prefabsURL: URL? { currentProjectURL?.appendingPathComponent("Prefabs") }
 
     private init() {}
 
@@ -43,7 +44,7 @@ class ProjectManager {
         let fm = FileManager.default
 
         // Create subdirectories if missing.
-        for subdir in ["Assets", "Scenes", "Scripts"] {
+        for subdir in ["Assets", "Scenes", "Scripts", "Prefabs"] {
             let dir = url.appendingPathComponent(subdir)
             if !fm.fileExists(atPath: dir.path) {
                 try? fm.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -29,6 +29,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     private var rotationField: NSTextField!
     private var scaleXField: NSTextField!
     private var scaleYField: NSTextField!
+    private var zIndexField: NSTextField!
     private var scriptNameField: NSTextField!
 
     var onBeforeEdit: (() -> Void)?
@@ -95,6 +96,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         (rotationField, y) = addField(label: "Rotation °", placeholder: "0", at: y, margin: margin)
         (scaleXField, y) = addField(label: "Scale X", placeholder: "1", at: y, margin: margin)
         (scaleYField, y) = addField(label: "Scale Y", placeholder: "1", at: y, margin: margin)
+        (zIndexField, y) = addField(label: "Z-Index", placeholder: "0", at: y, margin: margin)
 
         y = addSectionHeader("SCRIPT", at: y, margin: margin)
         (scriptNameField, y) = addField(label: "File", placeholder: "MyScript.js", at: y, margin: margin)
@@ -183,6 +185,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             rotationField.stringValue = String(format: "%.1f", node.rotation * 180 / .pi)
             scaleXField.stringValue = String(format: "%.2f", node.scale.x)
             scaleYField.stringValue = String(format: "%.2f", node.scale.y)
+            zIndexField.stringValue = String(node.zIndex)
 
             if let script = node.behaviors.first(where: { $0 is ScriptBehavior }) as? ScriptBehavior {
                 scriptNameField.stringValue = script.scriptName
@@ -238,7 +241,8 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         }
 
         guard field === posXField || field === posYField ||
-              field === rotationField || field === scaleXField || field === scaleYField else { return }
+              field === rotationField || field === scaleXField ||
+              field === scaleYField || field === zIndexField else { return }
 
         let value = Float(field.stringValue) ?? 0
         onBeforeEdit?()
@@ -248,6 +252,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         else if field === rotationField { node.rotation = value * .pi / 180 }
         else if field === scaleXField   { node.scale.x = value }
         else if field === scaleYField   { node.scale.y = value }
+        else if field === zIndexField   { node.zIndex = Int(value) }
 
         updateUI()
     }

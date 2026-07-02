@@ -28,17 +28,36 @@ class PhysicsBody {
     /// The physics world can use this to skip static-vs-static checks.
     var isDynamic: Bool
 
+    /// Linear velocity in pixels/second, integrated by the PhysicsWorld
+    /// each fixed step (Godot's CharacterBody2D.velocity). Behaviors and
+    /// scripts set this; the world moves the owner and applies gravity.
+    var velocity = simd_float2(0, 0)
+
+    /// How strongly the world's gravity affects this body.
+    /// 0 = ignores gravity (top-down movement), 1 = full gravity.
+    var gravityScale: Float = 1.0
+
+    /// If true, this body detects overlaps but never blocks movement
+    /// (Godot's Area2D). CollisionNode sets this automatically.
+    var isTrigger: Bool = false
+
+    /// Which layers this body occupies / scans (Godot's collision_layer
+    /// and collision_mask bitfields). Two bodies interact when either
+    /// one's mask includes a layer the other occupies.
+    var collisionLayer: UInt32 = 1
+    var collisionMask: UInt32 = 0xFFFFFFFF
+
+    /// World-axis offset of the box center from the owner's position.
+    /// Used by TileMapNode to attach many tile colliders to one node.
+    var offset = simd_float2(0, 0)
+
     init(size: simd_float2, isDynamic: Bool = true) {
         self.size = size
         self.isDynamic = isDynamic
     }
 
     /// The world-space bounding rectangle, computed from the owner's
-    /// globalTransform and this body's size.
-    ///
-    /// The globalTransform's column 3 contains the world-space position
-    /// (translation). We extract X and Y from there and build a CGRect
-    /// centered on that point.
+    /// globalTransform, this body's offset, and its size.
     ///
     ///   globalTransform column 3:
     ///     [3][0] = world X
@@ -49,8 +68,8 @@ class PhysicsBody {
         guard let owner = owner else { return .zero }
 
         let transform = owner.globalTransform
-        let centerX = CGFloat(transform.columns.3.x)
-        let centerY = CGFloat(transform.columns.3.y)
+        let centerX = CGFloat(transform.columns.3.x + offset.x)
+        let centerY = CGFloat(transform.columns.3.y + offset.y)
         let halfW = CGFloat(size.x / 2)
         let halfH = CGFloat(size.y / 2)
 

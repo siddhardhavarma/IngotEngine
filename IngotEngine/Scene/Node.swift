@@ -30,6 +30,10 @@ class Node: NSObject {
     /// update and rendering. Like "hiding" a subtree without removing it.
     var isEnabled: Bool = true
 
+    /// Draw order (Godot's z_index). Higher values render on top of
+    /// lower values. Nodes with equal zIndex keep scene-tree order.
+    var zIndex: Int = 0
+
     /// Whether ready() has been called on this node.
     private var isReady = false
 
@@ -149,6 +153,13 @@ class Node: NSObject {
             results.append(contentsOf: child.findChildren(inGroup: group))
         }
         return results
+    }
+
+    /// The topmost ancestor of this node (the scene's root when the
+    /// node is in a scene tree). Used by behaviors that need to reach
+    /// the whole tree — camera follow, runtime spawning, JS queries.
+    var sceneRoot: Node {
+        parent?.sceneRoot ?? self
     }
 
     /// Returns all descendants (flat list via depth-first traversal).

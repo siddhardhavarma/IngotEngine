@@ -6,11 +6,13 @@
 //
 //  Captures the COMPLETE scene state: node tree, transforms, physics
 //  bodies, behaviors (event-action rules), script attachments, sprite
-//  sheet frames, and camera references. This is the data that gets
-//  saved to disk, sent to the AI copilot, and used for undo snapshots.
+//  sheet frames, particles, tile maps, timers, and camera references.
+//  This is the data that gets saved to disk, sent to the AI copilot,
+//  used for undo snapshots, and written into prefab files.
 //
 
 import Foundation
+import simd
 
 struct SceneSerializer {
 
@@ -25,21 +27,35 @@ struct SceneSerializer {
             dict["activeCamera"] = cameraName
         }
 
+        return jsonString(from: dict)
+    }
+
+    /// Serializes a single node subtree (used for prefabs and
+    /// Node.duplicate()). Produces the same {"rootNode": ...} shape as
+    /// full scenes so SceneDeserializer.deserialize can read it.
+    static func serializeSubtree(_ node: Node) -> String {
+        jsonString(from: ["rootNode": serializeNode(node)])
+    }
+
+    private static func jsonString(from dict: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: dict,
                                                       options: [.prettyPrinted, .sortedKeys]),
               let json = String(data: data, encoding: .utf8) else {
             return "{}"
         }
-
         return json
     }
 
     // MARK: - Node serialization
 
     private static func serializeNode(_ node: Node) -> [String: Any] {
+        // Subclass checks must come before their superclasses.
         let typeName: String
         if node is CollisionNode { typeName = "CollisionNode" }
         else if node is AudioNode { typeName = "AudioNode" }
+        else if node is TimerNode { typeName = "TimerNode" }
+        else if node is ParticleNode { typeName = "ParticleNode" }
+        else if node is TileMapNode { typeName = "TileMapNode" }
         else if node is TextNode { typeName = "TextNode" }
         else if node is ShapeNode { typeName = "ShapeNode" }
         else if node is CameraNode { typeName = "CameraNode" }
@@ -57,6 +73,10 @@ struct SceneSerializer {
             "enabled": node.isEnabled,
         ]
 
+        if node.zIndex != 0 {
+            dict["zIndex"] = node.zIndex
+        }
+
         if !node.groups.isEmpty {
             dict["groups"] = Array(node.groups)
         }
@@ -64,6 +84,10 @@ struct SceneSerializer {
         // Type-specific properties.
         if let camera = node as? CameraNode {
             dict["zoom"] = Double(camera.zoom)
+            if let target = camera.followTargetName {
+                dict["followTarget"] = target
+                dict["followSmoothing"] = Double(camera.followSmoothing)
+            }
         }
 
         if let shape = node as? ShapeNode {
@@ -76,6 +100,8 @@ struct SceneSerializer {
         if let text = node as? TextNode {
             dict["text"] = text.text
             dict["fontSize"] = Double(text.fontSize)
+            dict["textColor"] = [Double(text.textColor.x), Double(text.textColor.y),
+                                 Double(text.textColor.z), Double(text.textColor.w)]
         }
 
         if let audio = node as? AudioNode {
@@ -91,20 +117,74 @@ struct SceneSerializer {
             dict["triggerSizeY"] = Double(trigger.triggerSize.y)
         }
 
+        if let timer = node as? TimerNode {
+            dict["waitTime"] = Double(timer.waitTime)
+            dict["oneShot"] = timer.oneShot
+            dict["autostart"] = timer.autostart
+            dict["timeoutSignal"] = timer.timeoutSignal
+        }
+
+        if let particles = node as? ParticleNode {
+            let particleDict: [String: Any] = [
+                "emitting": particles.emitting,
+                "amount": particles.amount,
+                "lifetime": Double(particles.lifetime),
+                "oneShot": particles.oneShot,
+                "direction": Double(particles.direction),
+                "spread": Double(particles.spread),
+                "initialVelocity": Double(particles.initialVelocity),
+                "velocityRandomness": Double(particles.velocityRandomness),
+                "gravityX": Double(particles.gravity.x),
+                "gravityY": Double(particles.gravity.y),
+                "startScale": Double(particles.startScale),
+                "endScale": Double(particles.endScale),
+                "startColor": [Double(particles.startColor.x), Double(particles.startColor.y),
+                               Double(particles.startColor.z), Double(particles.startColor.w)],
+                "endColor": [Double(particles.endColor.x), Double(particles.endColor.y),
+                             Double(particles.endColor.z), Double(particles.endColor.w)],
+                "angularVelocity": Double(particles.angularVelocityDegrees),
+            ]
+            dict["particles"] = particleDict
+        }
+
+        if let tileMap = node as? TileMapNode {
+            let tileMapDict: [String: Any] = [
+                "tileWidth": Double(tileMap.tileWidth),
+                "tileHeight": Double(tileMap.tileHeight),
+                "atlasColumns": tileMap.atlasColumns,
+                "atlasRows": tileMap.atlasRows,
+                "solidTiles": Array(tileMap.solidTiles).sorted(),
+                // Each tile as [x, y, index] — compact and diff-friendly.
+                "tiles": tileMap.tiles
+                    .map { [$0.key.x, $0.key.y, $0.value] }
+                    .sorted { ($0[1], $0[0]) < ($1[1], $1[0]) },
+            ]
+            dict["tileMap"] = tileMapDict
+        }
+
         if let sprite = node as? SpriteNode {
             dict["uvRect"] = [
                 Double(sprite.uvRect.x), Double(sprite.uvRect.y),
                 Double(sprite.uvRect.z), Double(sprite.uvRect.w)
             ]
+            if sprite.modulate != simd_float4(1, 1, 1, 1) {
+                dict["modulate"] = [Double(sprite.modulate.x), Double(sprite.modulate.y),
+                                    Double(sprite.modulate.z), Double(sprite.modulate.w)]
+            }
         }
 
         // Physics body.
         if let body = node.physicsBody {
-            dict["physicsBody"] = [
+            var bodyDict: [String: Any] = [
                 "sizeX": Double(body.size.x),
                 "sizeY": Double(body.size.y),
                 "isDynamic": body.isDynamic,
             ]
+            if body.gravityScale != 1 { bodyDict["gravityScale"] = Double(body.gravityScale) }
+            if body.isTrigger { bodyDict["isTrigger"] = true }
+            if body.collisionLayer != 1 { bodyDict["collisionLayer"] = Int(body.collisionLayer) }
+            if body.collisionMask != 0xFFFFFFFF { bodyDict["collisionMask"] = Int(body.collisionMask) }
+            dict["physicsBody"] = bodyDict
         }
 
         // Behaviors (event-action rules + script attachments).
@@ -145,6 +225,8 @@ struct SceneSerializer {
         switch event {
         case .onActionHeld(let action):
             return ["type": "onActionHeld", "action": action]
+        case .onActionJustPressed(let action):
+            return ["type": "onActionJustPressed", "action": action]
         case .everyFrame:
             return ["type": "everyFrame"]
         case .onStart:
@@ -168,6 +250,10 @@ struct SceneSerializer {
             return ["type": "playSound", "fileName": fileName]
         case .setProperty(let prop, let val):
             return ["type": "setProperty", "property": prop, "value": Double(val)]
+        case .setVelocity(let x, let y):
+            return ["type": "setVelocity", "x": Double(x), "y": Double(y)]
+        case .spawnPrefab(let name, let x, let y):
+            return ["type": "spawnPrefab", "prefab": name, "x": Double(x), "y": Double(y)]
         case .destroy:
             return ["type": "destroy"]
         }

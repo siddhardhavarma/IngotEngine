@@ -32,8 +32,11 @@ class CollisionNode: Node {
         super.init()
         name = "Trigger"
 
-        // Create a static physics body by default.
+        // Create a static trigger body by default. Trigger bodies detect
+        // overlaps but never block movement (Godot's Area2D); the
+        // PhysicsWorld calls fireTrigger() when something enters.
         let body = PhysicsBody(size: triggerSize, isDynamic: false)
+        body.isTrigger = true
         addPhysicsBody(body)
     }
 
