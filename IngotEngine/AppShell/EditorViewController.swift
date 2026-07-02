@@ -389,12 +389,13 @@ class EditorViewController: NSSplitViewController {
 
         let bridge = self.aiBridge
         let settings = self.aiSettings
+        chatPanel.setBusy(true)
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.chatPanel.setBusy(false) }
             do {
                 let jsonResponse = try await bridge.sendPromptToLLM(prompt: fullPrompt, settings: settings)
-                self.chatPanel.appendToHistory("AI: Executing commands...")
                 bridge.executeCommands(jsonString: jsonResponse, in: scene, settings: settings) { [weak self] log in
                     self?.chatPanel.appendToHistory("  \(log)")
                 }

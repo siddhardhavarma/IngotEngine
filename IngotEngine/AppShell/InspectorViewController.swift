@@ -313,6 +313,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             }
 
             let checkbox = addCheckbox(title: "Paint Mode (right-click erases)")
+            // Painting is the primary interaction with a tile map (they
+            // aren't drag-movable in the viewport), so paint mode is ON
+            // whenever a tile map is selected. Untick to disable.
+            checkbox.state = .on
             paintModeCheckbox = checkbox
             toggleHandlers[ObjectIdentifier(checkbox)] = { [weak self] _ in
                 self?.onPaintStateChanged?()

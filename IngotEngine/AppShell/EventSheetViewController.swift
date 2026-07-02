@@ -86,6 +86,13 @@ class EventSheetViewController: NSViewController {
         ])
     }
 
+    /// The tab can become visible after the selection already changed —
+    /// rebuild whenever it appears so it never shows stale/empty state.
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        rebuildUI()
+    }
+
     /// Rebuilds the UI from the target node's current rules.
     func rebuildUI() {
         guard isViewLoaded else { return }
@@ -96,7 +103,13 @@ class EventSheetViewController: NSViewController {
             view.removeFromSuperview()
         }
 
-        guard let node = targetNode else { return }
+        guard let node = targetNode else {
+            let emptyLabel = NSTextField(labelWithString: "Select a node to edit its rules.")
+            emptyLabel.font = NSFont.systemFont(ofSize: 12)
+            emptyLabel.textColor = .tertiaryLabelColor
+            stackView.addArrangedSubview(emptyLabel)
+            return
+        }
 
         // Find the first non-script Behavior (the rule-based one).
         let behavior = node.behaviors.first { !($0 is ScriptBehavior) }
