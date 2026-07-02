@@ -102,6 +102,10 @@ class EditorViewController: NSSplitViewController {
         inspector.onBeforeEdit = { [weak self] in
             self?.registerUndoSnapshot()
         }
+        inspector.onNodeEdited = { [weak self] in
+            // Name/enabled changes show in the hierarchy immediately.
+            self?.sidebar.refresh()
+        }
         inspector.onPaintStateChanged = { [weak self] in
             guard let self else { return }
             let state = self.inspector.paintState
@@ -378,6 +382,9 @@ class EditorViewController: NSSplitViewController {
                 bridge.executeCommands(jsonString: jsonResponse, in: scene, settings: settings) { [weak self] log in
                     self?.chatPanel.appendToHistory("  \(log)")
                 }
+                // AI commands can create/delete/rename nodes — refresh
+                // every panel that mirrors the tree.
+                self.sidebar.refresh()
                 self.inspector.refreshUI()
                 self.eventSheet.rebuildUI()
             } catch {
