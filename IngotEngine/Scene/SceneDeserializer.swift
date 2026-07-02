@@ -287,6 +287,9 @@ struct SceneDeserializer {
             guard let name = dict["prefab"] as? String,
                   let x = dict["x"] as? Double, let y = dict["y"] as? Double else { return nil }
             return .spawnPrefab(name, x: Float(x), y: Float(y))
+        case "changeScene":
+            guard let name = dict["scene"] as? String else { return nil }
+            return .changeScene(name)
         case "destroy":
             return .destroy
         default:

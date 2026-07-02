@@ -75,6 +75,21 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     private var dragOffset = simd_float2(0, 0)
     private var lastVisibleSprites: [SpriteNode] = []
 
+    // --- Tile painting state ---
+
+    /// When set, left-click/drag paints tiles on this map instead of
+    /// picking/dragging nodes; right-click/drag erases. Controlled by
+    /// the inspector's Paint Mode checkbox via the editor shell.
+    var paintTarget: TileMapNode?
+
+    /// The atlas tile index painted by the left mouse button.
+    var paintTileIndex: Int = 0
+
+    /// Fired once at the start of each paint stroke (for undo).
+    var onPaintWillBegin: (() -> Void)?
+
+    private var isPaintingStroke = false
+
     // --- Callbacks to the editor shell ---
 
     var onNodePicked: ((SpriteNode?) -> Void)?
@@ -209,9 +224,58 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         return nil
     }
 
+    // MARK: - Tile painting
+
+    /// Converts a world position to the paint target's tile grid and
+    /// sets/erases the tile there. Assumes the tile map is unrotated
+    /// and unscaled (the same restriction as its collision).
+    private func paintTile(at worldPos: simd_float2, erase: Bool) {
+        guard let tileMap = paintTarget else { return }
+
+        let origin = tileMap.globalTransform.columns.3
+        let localX = worldPos.x - origin.x
+        let localY = worldPos.y - origin.y
+        let tx = Int(floor(localX / max(tileMap.tileWidth, 1)))
+        let ty = Int(floor(localY / max(tileMap.tileHeight, 1)))
+
+        tileMap.setTile(x: tx, y: ty, tileIndex: erase ? -1 : paintTileIndex)
+    }
+
+    private func beginPaintStrokeIfNeeded() {
+        if !isPaintingStroke {
+            isPaintingStroke = true
+            onPaintWillBegin?()
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard paintTarget != nil else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        beginPaintStrokeIfNeeded()
+        paintTile(at: convertToWorldSpace(event: event), erase: true)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        guard paintTarget != nil else { return }
+        paintTile(at: convertToWorldSpace(event: event), erase: true)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        isPaintingStroke = false
+    }
+
     override func mouseDown(with event: NSEvent) {
         // Re-claim keyboard focus so WASD keeps working after a click.
         view.window?.makeFirstResponder(self)
+
+        // Paint mode takes over the left mouse button entirely.
+        if paintTarget != nil {
+            beginPaintStrokeIfNeeded()
+            paintTile(at: convertToWorldSpace(event: event), erase: false)
+            return
+        }
 
         let worldPos = convertToWorldSpace(event: event)
         let hitNode = pickNode(at: worldPos)
@@ -232,6 +296,11 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if paintTarget != nil {
+            paintTile(at: convertToWorldSpace(event: event), erase: false)
+            return
+        }
+
         guard let node = draggedNode else { return }
 
         let worldPos = convertToWorldSpace(event: event)
@@ -243,6 +312,7 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
     override func mouseUp(with event: NSEvent) {
         draggedNode = nil
+        isPaintingStroke = false
     }
 
     // MARK: - Pipeline & texture setup

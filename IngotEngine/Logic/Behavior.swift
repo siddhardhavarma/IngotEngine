@@ -82,6 +82,10 @@ enum GameAction {
     /// Instantiate a prefab at (x, y) under the scene root.
     case spawnPrefab(String, x: Float, y: Float)
 
+    /// Switch to another scene at the end of this frame
+    /// (menu → level 1 → level 2 …).
+    case changeScene(String)
+
     /// Remove the owner node from the scene tree.
     case destroy
 
@@ -95,6 +99,7 @@ enum GameAction {
         case .setProperty(let p, let v):     return "Set \(p) = \(v)"
         case .setVelocity(let x, let y):     return "Velocity (\(x), \(y))"
         case .spawnPrefab(let n, let x, let y): return "Spawn \"\(n)\" at (\(x), \(y))"
+        case .changeScene(let s):            return "Change Scene → \"\(s)\""
         case .destroy:                       return "Destroy"
         }
     }
@@ -242,6 +247,9 @@ class Behavior {
             if let world = PhysicsWorld.current {
                 registerBodies(of: instance, with: world)
             }
+
+        case .changeScene(let name):
+            Engine.current?.requestScene(named: name)
 
         case .destroy:
             // Unregister physics before removal so no orphaned body

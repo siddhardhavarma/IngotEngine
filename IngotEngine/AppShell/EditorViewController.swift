@@ -102,6 +102,20 @@ class EditorViewController: NSSplitViewController {
         inspector.onBeforeEdit = { [weak self] in
             self?.registerUndoSnapshot()
         }
+        inspector.onPaintStateChanged = { [weak self] in
+            guard let self else { return }
+            let state = self.inspector.paintState
+            self.viewport.paintTarget = state.target
+            self.viewport.paintTileIndex = state.index
+        }
+
+        sidebar.onBeforeTreeEdit = { [weak self] in
+            self?.registerUndoSnapshot()
+        }
+
+        viewport.onPaintWillBegin = { [weak self] in
+            self?.registerUndoSnapshot()
+        }
 
         sidebar.onExportRequested = { [weak self] in
             self?.exportToiOS()
@@ -159,6 +173,27 @@ class EditorViewController: NSSplitViewController {
         // so they're visible the instant the command runs.
         aiBridge.defaultTextureProvider = { [weak self] in
             self?.viewport.texture
+        }
+
+        // Runtime scene changes (the changeScene action / JS call) load
+        // scenes from the project's Scenes/ folder during Play mode.
+        engine.sceneLoader = { [weak self] name in
+            guard let self,
+                  let result = ProjectManager.shared.loadScene(named: name) else { return nil }
+            let scene = Scene()
+            scene.rootNode = result.rootNode
+            if let tex = self.viewport.texture {
+                self.assignDefaultTexture(tex, to: result.rootNode)
+            }
+            SceneDeserializer.restoreActiveCamera(scene: scene, fromJSON: result.json)
+            return scene
+        }
+        engine.onSceneChanged = { [weak self] scene in
+            guard let self else { return }
+            self.sidebar.rootNode = scene.rootNode
+            self.inspector.selectedNode = nil
+            self.eventSheet.targetNode = nil
+            self.chatPanel.appendToHistory("Scene changed.")
         }
     }
 
@@ -252,10 +287,16 @@ class EditorViewController: NSSplitViewController {
             default: return
             }
 
-            let gameName = ProjectManager.shared.projectFile.gameName
+            let projectFile = ProjectManager.shared.projectFile
+            let gameName = projectFile.gameName
             var preset = ExportPreset()
             preset.platform = platform
             preset.gameName = gameName
+            preset.designWidth = projectFile.designWidth
+            preset.designHeight = projectFile.designHeight
+            let slug = gameName.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted).joined()
+            preset.bundleID = "com.ingot.\(slug.isEmpty ? "game" : slug)"
 
             let panel = NSSavePanel()
             panel.title = "Export for \(platform.rawValue)"

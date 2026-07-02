@@ -254,6 +254,8 @@ struct SceneSerializer {
             return ["type": "setVelocity", "x": Double(x), "y": Double(y)]
         case .spawnPrefab(let name, let x, let y):
             return ["type": "spawnPrefab", "prefab": name, "x": Double(x), "y": Double(y)]
+        case .changeScene(let name):
+            return ["type": "changeScene", "scene": name]
         case .destroy:
             return ["type": "destroy"]
         }

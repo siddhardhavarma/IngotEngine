@@ -15,6 +15,8 @@ class SidebarViewController: NSViewController,
 
     var onNodeSelected: ((Node?) -> Void)?
     var onTreeChanged: (() -> Void)?
+    /// Fired before a node is added or removed (for undo snapshots).
+    var onBeforeTreeEdit: (() -> Void)?
     var onExportRequested: (() -> Void)?
     var onPlayToggle: (() -> Void)?
     var onSaveScene: (() -> Void)?
@@ -173,6 +175,7 @@ class SidebarViewController: NSViewController,
     }
 
     private func addNodeToScene(_ node: Node) {
+        onBeforeTreeEdit?()
         let parent = selectedNode() ?? rootNode
         parent?.addChild(node)
         outlineView.reloadData()
@@ -187,6 +190,8 @@ class SidebarViewController: NSViewController,
 
     @objc private func removeButtonClicked() {
         guard let node = selectedNode(), node !== rootNode else { return }
+        onBeforeTreeEdit?()
+        PhysicsWorld.current?.removeBodies(ownedBy: node)
         node.removeFromParent()
         outlineView.reloadData()
         outlineView.expandItem(nil, expandChildren: true)

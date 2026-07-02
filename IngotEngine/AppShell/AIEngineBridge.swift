@@ -37,6 +37,8 @@ class AIEngineBridge {
         let sceneJSON = SceneSerializer.serialize(currentScene)
         let prefabs = PrefabLibrary.list()
         let prefabList = prefabs.isEmpty ? "(none saved yet)" : prefabs.joined(separator: ", ")
+        let scenes = ProjectManager.shared.listScenes()
+        let sceneList = scenes.isEmpty ? "(none saved yet)" : scenes.joined(separator: ", ")
 
         return """
         [System Prompt]
@@ -47,6 +49,7 @@ class AIEngineBridge {
         \(sceneJSON)
 
         Saved prefabs: \(prefabList)
+        Saved scenes: \(sceneList)
 
         You must respond ONLY with a JSON array of commands. Each command is an object with an "action" key.
 
@@ -101,7 +104,7 @@ class AIEngineBridge {
         17. "addRule" — add a visual-scripting rule to a node's event sheet.
             Required: "targetName", "event" (object), "actions" (array of objects)
             Event types: {"type":"onActionHeld","action":"move_left"}, {"type":"onActionJustPressed","action":"action"}, {"type":"everyFrame"}, {"type":"onStart"}, {"type":"onCollision"}, {"type":"onSignal","signal":"name"}
-            Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"setVelocity","x":0,"y":600}, {"type":"spawnPrefab","prefab":"Enemy","x":100,"y":300}, {"type":"destroy"}
+            Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"setVelocity","x":0,"y":600}, {"type":"spawnPrefab","prefab":"Enemy","x":100,"y":300}, {"type":"changeScene","scene":"Level2"}, {"type":"destroy"}
             Input actions available: move_left, move_right, move_up, move_down, action (Space / touch button).
             Timers emit their "signal" on timeout — pair a TimerNode with onSignal rules for spawn waves.
             Triggers (CollisionNode) emit their "triggerSignal" when something enters them.

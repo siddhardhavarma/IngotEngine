@@ -44,6 +44,7 @@ import simd
     func emitSignal(_ name: String)
     func setVelocity(_ x: Float, _ y: Float)
     func spawn(_ prefabName: String, _ x: Float, _ y: Float) -> Node?
+    func changeScene(_ name: String)
     func destroy()
 }
 
@@ -120,6 +121,12 @@ extension Node: NodeJSExport {
             }
         }
         return instance
+    }
+
+    /// Requests a scene change at the end of this frame.
+    /// JS: node.changeScene("Level2")
+    @objc func changeScene(_ name: String) {
+        Engine.current?.requestScene(named: name)
     }
 
     @objc func destroy() {
