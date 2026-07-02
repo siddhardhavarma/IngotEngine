@@ -32,7 +32,30 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     private var zIndexField: NSTextField!
     private var scriptNameField: NSTextField!
 
+    // Tile map section (only visible when a TileMapNode is selected).
+    private var tileWidthField: NSTextField!
+    private var tileHeightField: NSTextField!
+    private var atlasColsField: NSTextField!
+    private var atlasRowsField: NSTextField!
+    private var solidTilesField: NSTextField!
+    private var paintIndexField: NSTextField!
+    private var paintModeCheckbox: NSButton!
+    private var tileMapSectionViews: [NSView] = []
+
     var onBeforeEdit: (() -> Void)?
+
+    /// Fired whenever the tile paint state may have changed (checkbox,
+    /// paint index, or selection). The editor reads `paintState`.
+    var onPaintStateChanged: (() -> Void)?
+
+    /// The viewport paint target: non-nil only while Paint Mode is on
+    /// and the selected node is a tile map.
+    var paintState: (target: TileMapNode?, index: Int) {
+        guard isViewLoaded,
+              paintModeCheckbox.state == .on,
+              let tileMap = selectedNode as? TileMapNode else { return (nil, 0) }
+        return (tileMap, Int(paintIndexField.stringValue) ?? 0)
+    }
 
     var selectedNode: Node? {
         didSet { updateUI() }
@@ -115,11 +138,45 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         contentView.addSubview(createBtn)
         y += 32
 
+        // --- Tile map section (hidden unless a TileMapNode is selected) ---
+        y = addTrackedSectionHeader("TILE MAP", at: y, margin: margin)
+        (tileWidthField, y) = addTrackedField(label: "Tile W", placeholder: "64", at: y, margin: margin)
+        (tileHeightField, y) = addTrackedField(label: "Tile H", placeholder: "64", at: y, margin: margin)
+        (atlasColsField, y) = addTrackedField(label: "Atlas Cols", placeholder: "4", at: y, margin: margin)
+        (atlasRowsField, y) = addTrackedField(label: "Atlas Rows", placeholder: "4", at: y, margin: margin)
+        (solidTilesField, y) = addTrackedField(label: "Solid Tiles", placeholder: "0, 1, 5", at: y, margin: margin)
+        (paintIndexField, y) = addTrackedField(label: "Paint Tile", placeholder: "0", at: y, margin: margin)
+
+        paintModeCheckbox = NSButton(checkboxWithTitle: "Paint Mode (right-click erases)",
+                                     target: self, action: #selector(paintModeToggled))
+        paintModeCheckbox.frame = NSRect(x: margin, y: y, width: 220, height: 18)
+        contentView.addSubview(paintModeCheckbox)
+        tileMapSectionViews.append(paintModeCheckbox)
+        y += 28
+
         // Set the content view's frame height so the scroll view knows
         // how much content there is.
         contentView.frame = NSRect(x: 0, y: 0, width: 240, height: y)
 
         updateUI()
+    }
+
+    // Variants of the form builders that record every created view so
+    // the whole section can be shown/hidden by node type.
+
+    private func addTrackedSectionHeader(_ title: String, at y: CGFloat, margin: CGFloat) -> CGFloat {
+        let before = contentView.subviews.count
+        let newY = addSectionHeader(title, at: y, margin: margin)
+        tileMapSectionViews.append(contentsOf: contentView.subviews[before...])
+        return newY
+    }
+
+    private func addTrackedField(label: String, placeholder: String,
+                                 at y: CGFloat, margin: CGFloat) -> (NSTextField, CGFloat) {
+        let before = contentView.subviews.count
+        let result = addField(label: label, placeholder: placeholder, at: y, margin: margin)
+        tileMapSectionViews.append(contentsOf: contentView.subviews[before...])
+        return result
     }
 
     override func viewDidLayout() {
@@ -192,10 +249,26 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             } else {
                 scriptNameField.stringValue = ""
             }
+
+            // Tile map section: visible only for TileMapNodes.
+            let tileMap = node as? TileMapNode
+            for view in tileMapSectionViews { view.isHidden = (tileMap == nil) }
+            if let tileMap = tileMap {
+                tileWidthField.stringValue = String(format: "%.0f", tileMap.tileWidth)
+                tileHeightField.stringValue = String(format: "%.0f", tileMap.tileHeight)
+                atlasColsField.stringValue = String(tileMap.atlasColumns)
+                atlasRowsField.stringValue = String(tileMap.atlasRows)
+                solidTilesField.stringValue = tileMap.solidTiles.sorted()
+                    .map(String.init).joined(separator: ", ")
+            }
         } else {
             scrollView.isHidden = true
             noSelectionLabel.isHidden = false
+            for view in tileMapSectionViews { view.isHidden = true }
         }
+
+        // Selection changes can invalidate the paint target.
+        onPaintStateChanged?()
     }
 
     // MARK: - Actions
@@ -204,6 +277,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         guard let node = selectedNode else { return }
         onBeforeEdit?()
         node.isEnabled = (enabledCheckbox.state == .on)
+    }
+
+    @objc private func paintModeToggled() {
+        onPaintStateChanged?()
     }
 
     @objc private func assignScriptClicked() {
@@ -237,6 +314,37 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         if field === nameField {
             onBeforeEdit?()
             node.name = field.stringValue
+            return
+        }
+
+        // Tile map fields.
+        if let tileMap = node as? TileMapNode,
+           field === tileWidthField || field === tileHeightField ||
+           field === atlasColsField || field === atlasRowsField ||
+           field === solidTilesField || field === paintIndexField {
+
+            if field === paintIndexField {
+                onPaintStateChanged?()
+                return
+            }
+
+            onBeforeEdit?()
+            if field === tileWidthField {
+                tileMap.tileWidth = max(Float(field.stringValue) ?? 64, 1)
+                tileMap.rebuildCollision()
+            } else if field === tileHeightField {
+                tileMap.tileHeight = max(Float(field.stringValue) ?? 64, 1)
+                tileMap.rebuildCollision()
+            } else if field === atlasColsField {
+                tileMap.atlasColumns = Int(field.stringValue) ?? 4
+            } else if field === atlasRowsField {
+                tileMap.atlasRows = Int(field.stringValue) ?? 4
+            } else if field === solidTilesField {
+                tileMap.solidTiles = Set(field.stringValue
+                    .split(separator: ",")
+                    .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) })
+            }
+            updateUI()
             return
         }
 

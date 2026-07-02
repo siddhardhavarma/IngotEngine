@@ -23,6 +23,10 @@ import Foundation
 
 class Engine {
 
+    /// The running engine instance. Behaviors and JS scripts use this
+    /// to request scene changes (mirrors PhysicsWorld.current).
+    static weak var current: Engine?
+
     // MARK: - Subsystems (§4.x)
 
     /// §4.2 — Frame timing, deltaTime, totalTime, fixed-step accumulator.
@@ -51,6 +55,51 @@ class Engine {
         }
     }
 
+    // MARK: - Scene flow (menu → level 1 → level 2 …)
+
+    /// Loads a scene by name. Injected by the platform shell: the
+    /// editor loads from the project's Scenes/ folder, an exported
+    /// game loads from its bundled Resources/Scenes/. The loader is
+    /// responsible for texture assignment and camera restoration.
+    var sceneLoader: ((String) -> Scene?)?
+
+    /// Called after a requested scene change completes, so UI layers
+    /// (editor panels) can re-point at the new node tree.
+    var onSceneChanged: ((Scene) -> Void)?
+
+    /// The scene change requested this frame, if any. Applied at the
+    /// END of the frame — swapping the tree mid-update would pull
+    /// nodes out from under the behavior loop.
+    private var pendingSceneName: String?
+
+    /// Requests a scene change (from a behavior rule, JS, or AI).
+    /// Takes effect at the end of the current frame.
+    func requestScene(named name: String) {
+        pendingSceneName = name
+    }
+
+    /// Applies a pending scene change. Called at the end of step(),
+    /// so changes only ever occur between frames during play mode.
+    private func applyPendingSceneChange() {
+        guard let name = pendingSceneName else { return }
+        pendingSceneName = nil
+
+        guard let loader = sceneLoader else {
+            Log.warning("Scene change to \"\(name)\" requested but no sceneLoader is set.")
+            return
+        }
+        guard let scene = loader(name) else {
+            Log.warning("Scene \"\(name)\" could not be loaded.")
+            return
+        }
+
+        currentScene = scene
+        EventBus.shared.emit("SceneChanged")
+        EventBus.shared.emit("SceneChanged:\(name)")
+        onSceneChanged?(scene)
+        Log.info("Scene changed to \"\(name)\".")
+    }
+
     // MARK: - Play State
 
     /// When false, step() skips logic — the editor is in design mode.
@@ -72,6 +121,8 @@ class Engine {
     // MARK: - Initialization
 
     init() {
+        Engine.current = self
+
         // Expose this engine's physics world to behaviors (runtime
         // spawn/destroy need to register/unregister bodies).
         PhysicsWorld.current = physicsWorld
@@ -133,5 +184,9 @@ class Engine {
         // End-of-frame input bookkeeping: "just pressed" edges only
         // live for the frame in which the key went down.
         InputManager.shared.endFrame()
+
+        // 9. Scene flow — apply a requested scene change only now that
+        //    the frame is fully processed (no node is mid-update).
+        applyPendingSceneChange()
     }
 }

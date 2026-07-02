@@ -35,11 +35,6 @@ class EventSheetViewController: NSViewController {
     /// Called before any edit so the editor can save an undo snapshot.
     var onBeforeEdit: (() -> Void)?
 
-    // The event types available in the dropdown.
-    private let eventTypes = ["Action Held", "Every Frame", "On Start", "On Collision", "On Signal"]
-    // The action types available in the dropdown.
-    private let actionTypes = ["Move", "Rotate", "Emit Signal", "Play Sound", "Set Property", "Destroy"]
-
     override func loadView() {
         self.view = NSView()
     }
@@ -157,11 +152,22 @@ class EventSheetViewController: NSViewController {
         actionsLabel.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(actionsLabel)
 
+        // Edit button (opens the rule editor sheet).
+        let editButton = NSButton(title: "✎", target: self, action: #selector(editRuleClicked(_:)))
+        editButton.bezelStyle = .smallSquare
+        editButton.isBordered = false
+        editButton.font = NSFont.systemFont(ofSize: 13)
+        editButton.toolTip = "Edit rule"
+        editButton.tag = index
+        editButton.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(editButton)
+
         // Delete button.
         let deleteButton = NSButton(title: "×", target: self, action: #selector(deleteRuleClicked(_:)))
         deleteButton.bezelStyle = .smallSquare
         deleteButton.isBordered = false
         deleteButton.font = NSFont.systemFont(ofSize: 14, weight: .bold)
+        deleteButton.toolTip = "Delete rule"
         deleteButton.tag = index
         deleteButton.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(deleteButton)
@@ -175,7 +181,7 @@ class EventSheetViewController: NSViewController {
 
             eventLabel.centerYAnchor.constraint(equalTo: whenLabel.centerYAnchor),
             eventLabel.leadingAnchor.constraint(equalTo: whenLabel.trailingAnchor, constant: 4),
-            eventLabel.trailingAnchor.constraint(lessThanOrEqualTo: deleteButton.leadingAnchor, constant: -4),
+            eventLabel.trailingAnchor.constraint(lessThanOrEqualTo: editButton.leadingAnchor, constant: -4),
 
             doLabel.topAnchor.constraint(equalTo: whenLabel.bottomAnchor, constant: 2),
             doLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
@@ -184,7 +190,11 @@ class EventSheetViewController: NSViewController {
 
             actionsLabel.centerYAnchor.constraint(equalTo: doLabel.centerYAnchor),
             actionsLabel.leadingAnchor.constraint(equalTo: doLabel.trailingAnchor, constant: 4),
-            actionsLabel.trailingAnchor.constraint(lessThanOrEqualTo: deleteButton.leadingAnchor, constant: -4),
+            actionsLabel.trailingAnchor.constraint(lessThanOrEqualTo: editButton.leadingAnchor, constant: -4),
+
+            editButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            editButton.trailingAnchor.constraint(equalTo: deleteButton.leadingAnchor, constant: -2),
+            editButton.widthAnchor.constraint(equalToConstant: 20),
 
             deleteButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
             deleteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
@@ -201,20 +211,40 @@ class EventSheetViewController: NSViewController {
 
     @objc private func addRuleClicked() {
         guard let node = targetNode else { return }
-        onBeforeEdit?()
 
-        // Add a default "Every Frame → Move" rule.
-        let newRule = Rule(event: .everyFrame, actions: [.move(x: 0, y: 0)])
-
-        // Find the existing rule behavior, or create one.
-        if let behavior = node.behaviors.first(where: { !($0 is ScriptBehavior) }) {
-            behavior.rules.append(newRule)
-        } else {
-            let behavior = Behavior(rules: [newRule])
-            node.addBehavior(behavior)
+        // Open the rule editor for a brand-new rule; append on save.
+        let editor = RuleEditorViewController()
+        editor.rule = nil
+        editor.onSave = { [weak self] newRule in
+            guard let self else { return }
+            self.onBeforeEdit?()
+            if let behavior = node.behaviors.first(where: { !($0 is ScriptBehavior) }) {
+                behavior.rules.append(newRule)
+            } else {
+                node.addBehavior(Behavior(rules: [newRule]))
+            }
+            self.rebuildUI()
         }
+        presentAsSheet(editor)
+    }
 
-        rebuildUI()
+    @objc private func editRuleClicked(_ sender: NSButton) {
+        guard let node = targetNode,
+              let behavior = node.behaviors.first(where: { !($0 is ScriptBehavior) }),
+              sender.tag < behavior.rules.count else { return }
+
+        let index = sender.tag
+        let editor = RuleEditorViewController()
+        editor.rule = behavior.rules[index]
+        editor.onSave = { [weak self] editedRule in
+            guard let self else { return }
+            self.onBeforeEdit?()
+            if index < behavior.rules.count {
+                behavior.rules[index] = editedRule
+            }
+            self.rebuildUI()
+        }
+        presentAsSheet(editor)
     }
 
     @objc private func deleteRuleClicked(_ sender: NSButton) {

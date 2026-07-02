@@ -61,7 +61,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 ### Core/ (11 files)
 | File | What it does |
 |------|-------------|
-| `Engine.swift` | The orchestrator. Owns GameClock, PhysicsWorld, AudioManager, MusicPlayer, TweenManager. `step()` runs the frame loop and clears per-frame input edges. `isPlaying` toggles design/play mode. Publishes `PhysicsWorld.current` for runtime spawn/destroy. |
+| `Engine.swift` | The orchestrator. Owns GameClock, PhysicsWorld, AudioManager, MusicPlayer, TweenManager. `step()` runs the frame loop and clears per-frame input edges. `isPlaying` toggles design/play mode. Publishes `PhysicsWorld.current` + `Engine.current`. Scene flow: `sceneLoader` (injected by the shell) + `requestScene(named:)` swap scenes safely at end-of-frame and emit "SceneChanged". |
 | `GameClock.swift` | Tracks deltaTime, totalTime, fixed-step accumulator for deterministic physics. |
 | `Math.swift` | `orthographicProjection()`, `translationMatrix()`, `rotationMatrix()`, `scaleMatrix()` — all return `simd_float4x4`. |
 | `ProjectManager.swift` | Singleton. Manages project directory (Assets/, Scenes/, Scripts/, Prefabs/). Saves/loads scenes as JSON. Manages project.json manifest. |
@@ -76,7 +76,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 ### Logic/ (4 files)
 | File | What it does |
 |------|-------------|
-| `Behavior.swift` | The event-action rule system. Events: `onActionHeld`, `onActionJustPressed`, `everyFrame`, `onStart`, `onCollision`, `onSignal` (wired to the EventBus — timers/triggers drive rules). Actions: `move`, `rotate`, `emitSignal`, `playSound`, `setProperty`, `setVelocity`, `spawnPrefab`, `destroy` (unregisters physics). |
+| `Behavior.swift` | The event-action rule system. Events: `onActionHeld`, `onActionJustPressed`, `everyFrame`, `onStart`, `onCollision`, `onSignal` (wired to the EventBus — timers/triggers drive rules). Actions: `move`, `rotate`, `emitSignal`, `playSound`, `setProperty`, `setVelocity`, `spawnPrefab`, `changeScene`, `destroy` (unregisters physics). |
 | `ScriptBehavior.swift` | Loads `.js` lifecycle files from Scripts/. Evaluates ONCE at load, then calls `Script.update(node, dt, time)` each frame via `JSValue.invokeMethod`. Injects `InputManager.shared` as `Input` into JS context. |
 | `Signal.swift` | Observer pattern: array of closures, `emit()` calls all. |
 | `EventBus.swift` | Global singleton pub/sub. `connect(to: "Collision") { ... }`, `emit("Collision")`. Collisions also emit per-node `"Collision:<NodeName>"` signals. |
@@ -120,18 +120,19 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (9 files — the macOS editor)
+### AppShell/ (10 files — the macOS editor)
 | File | What it does |
 |------|-------------|
-| `EditorViewController.swift` | NSSplitViewController root. Owns Engine, wires all panels. NSToolbarDelegate for Save/Load/Play/Export buttons. Manages undo (snapshot-based), AI prompt dispatch, play/stop (re-registers physics each play), save/load, export. |
-| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Dynamic instance buffer grows with the scene. Camera shake applied to the view matrix. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration. |
-| `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer), play/stop. |
-| `InspectorViewController.swift` | Property editor. Frame-based layout in FlippedView. Sections: Identity (name, enabled), Transform (posX/Y, rotation, scaleX/Y, zIndex), Script (assign/create .js files). |
+| `EditorViewController.swift` | NSSplitViewController root. Owns Engine, wires all panels. NSToolbarDelegate for Save/Load/Play/Export buttons. Manages undo (snapshot-based), AI prompt dispatch, play/stop (re-registers physics each play), save/load, runtime scene-loader wiring, tile-paint wiring, export. |
+| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Dynamic instance buffer grows with the scene. Camera shake applied to the view matrix. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase) when the inspector's Paint Mode is on. |
+| `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |
+| `InspectorViewController.swift` | Property editor. Frame-based layout in FlippedView. Sections: Identity (name, enabled), Transform (posX/Y, rotation, scaleX/Y, zIndex), Script (assign/create .js files), Tile Map (tile size, atlas grid, solid tiles, paint tile + Paint Mode toggle — visible for TileMapNodes only). |
 | `ChatPanelViewController.swift` | AI copilot UI. Dark monospaced history view with color-coded messages. Prompt field fires onPromptSubmitted. |
-| `EventSheetViewController.swift` | Visual scripting surface. Displays behavior rules as When/Do rows. Add/delete rule buttons. |
+| `EventSheetViewController.swift` | Visual scripting surface. Displays behavior rules as When/Do rows with edit (✎) and delete buttons; + Add Rule opens the rule editor. |
+| `RuleEditorViewController.swift` | Sheet for editing one rule inline: event dropdown + parameter field, editable action rows (type dropdown + up to 3 params), add/remove actions, Save builds the Rule. |
 | `AssetBrowserViewController.swift` | NSTableView file browser showing Assets/, Scripts/, Scenes/ contents with type icons, names, and sizes. |
 | `AIEngineBridge.swift` | LLM communication. Builds prompts with full scene context + prefab list, sends to OpenAI/Claude/Gemini, strips markdown, executes 20 JSON command types (createNode, deleteNode, updateProperty, setColor, setText, addPhysicsBody, setVelocity, setGravity, configureParticles, configureTileMap, paintTiles, setCameraFollow, configureTimer, savePrefab, spawnPrefab, addToGroup, addRule, attachScript, generateTexture, generateSound). |
-| `ProjectExporter.swift` | Generates .swiftpm packages for iPhone/iPad/Apple TV. Creates Package.swift, GameApp.swift (SwiftUI), GameViewController.swift (Metal+UIKit, mirrors the editor renderer incl. tile maps/particles/z-order), TouchControls.swift (virtual joystick + action button feeding InputManager). Copies assets/scripts/prefabs/shaders, and auto-copies engine sources when `IngotEngineSourcePath` is set. |
+| `ProjectExporter.swift` | Generates .swiftpm packages for iPhone/iPad/Apple TV. Creates Package.swift (`.iOSApplication` app product on iPhone/iPad — real installable app with bundle ID/orientations), GameApp.swift (SwiftUI), GameViewController.swift (Metal+UIKit, mirrors the editor renderer incl. tile maps/particles/z-order, design-resolution scaling, runtime scene loader), TouchControls.swift (virtual joystick + action button), ControllerInput.swift (GameController → InputManager, incl. Siri Remote). Copies assets/scripts/prefabs/ALL scenes/shaders, and auto-copies engine sources when `IngotEngineSourcePath` is set. |
 
 ---
 
@@ -155,7 +156,7 @@ var Script = {
 };
 ```
 The JS file is parsed ONCE. Each frame calls the compiled `update` function.
-Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `destroy()`.
+Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `changeScene(name)`, `destroy()`.
 
 ### Batched Multi-Texture Rendering
 All quads share the same 6-vertex geometry. The scene (sprites, tiles, particles) is flattened into a per-frame instance list, z-sorted, and drawn as one instanced draw call per texture run (`baseInstance` keeps `[[instance_id]]` aligned with the shared buffer). A 1,000-tile map with one atlas costs one draw call.
@@ -173,6 +174,9 @@ viewMatrix = translate(screenCenter) × scale(zoom) × translate(-camPos - shake
 viewProjection = projection × viewMatrix
 ```
 Mouse picking reverses this transform to convert screen coordinates to world space. Set `followTargetName` + `followSmoothing` for Camera2D-style smoothed tracking.
+
+### Scene Flow (menu → level 1 → level 2)
+Any rule (`changeScene` action), JS call (`node.changeScene("Level2")`), or AI command can request a scene change. The Engine applies it at END of frame via the injected `sceneLoader` — the editor loads from Scenes/, exported games from their bundled Resources/Scenes/ (the exporter copies every saved scene). "SceneChanged" + "SceneChanged:<name>" fire on the EventBus.
 
 ### iOS-First Export
 Exported games run the exact same engine code (all Scene/Logic/Physics/Core files are AppKit-free). The generated `TouchControls` overlay maps the left half of the screen to a virtual joystick and the right half to the action button, feeding the same `InputManager` action names the editor keyboard uses — behaviors and scripts run unchanged on iPhone/iPad. To make exports build out of the box, point the exporter at the engine sources once:
@@ -218,13 +222,11 @@ engine.physicsWorld.gravity = simd_float2(0, 0)     // top-down (default)
 ---
 
 ## Known Gaps / TODO
-1. No `.xcodeproj` generation — export uses `.swiftpm` only
-2. No scene transitions / multi-scene management at runtime (single entry scene)
-3. No undo for node add/delete in sidebar (only property edits and AI commands)
-4. No file-watching / hot-reload for scripts or assets
-5. Texture references use node names, not proper asset IDs
-6. Event sheet editor is display-only — no inline editing of rule parameters
-7. No tile-map painting UI in the viewport — tiles are placed via AI commands or code
-8. Dynamic-vs-dynamic collisions detect but don't resolve
-9. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
-10. Apple TV export lacks game controller input wiring (touch overlay is iPhone/iPad only)
+1. No `.xcodeproj` generation — export uses `.swiftpm` only (the iPhone/iPad package is a runnable `.iOSApplication` app, though)
+2. No file-watching / hot-reload for scripts or assets
+3. Texture references use node names, not proper asset IDs
+4. Dynamic-vs-dynamic collisions detect but don't resolve
+5. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
+6. No headless unit-test suite / CI yet (the engine core is GPU-free by design, so this is cheap to add)
+7. Tile paint mode has no atlas-preview palette — the paint tile is chosen by index
+8. Exported app icon uses the platform default (set one in Xcode after export)

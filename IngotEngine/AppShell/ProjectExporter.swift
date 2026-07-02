@@ -87,10 +87,11 @@ class ProjectExporter {
         let sourcesAssets = destinationURL.appendingPathComponent("Sources/Resources/Assets")
         let sourcesScripts = destinationURL.appendingPathComponent("Sources/Resources/Scripts")
         let sourcesPrefabs = destinationURL.appendingPathComponent("Sources/Resources/Prefabs")
+        let sourcesScenes = destinationURL.appendingPathComponent("Sources/Resources/Scenes")
         let sourcesShaders = destinationURL.appendingPathComponent("Sources/Shaders")
 
         for dir in [sourcesApp, sourcesEngine, sourcesResources, sourcesAssets,
-                    sourcesScripts, sourcesPrefabs, sourcesShaders] {
+                    sourcesScripts, sourcesPrefabs, sourcesScenes, sourcesShaders] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
 
@@ -117,13 +118,17 @@ class ProjectExporter {
                       extensions: assetExtensions, fm: fm)
         }
 
-        // --- 4. Copy scripts + prefabs ---
+        // --- 4. Copy scripts + prefabs + all scenes (for changeScene) ---
         if let scriptsDir = ProjectManager.shared.scriptsURL {
             copyFiles(from: scriptsDir, to: sourcesScripts,
                       extensions: Set(["js"]), fm: fm)
         }
         if let prefabsDir = ProjectManager.shared.prefabsURL {
             copyFiles(from: prefabsDir, to: sourcesPrefabs,
+                      extensions: Set(["json"]), fm: fm)
+        }
+        if let scenesDir = ProjectManager.shared.scenesURL {
+            copyFiles(from: scenesDir, to: sourcesScenes,
                       extensions: Set(["json"]), fm: fm)
         }
 
@@ -146,6 +151,12 @@ class ProjectExporter {
                 .write(to: sourcesApp.appendingPathComponent("TouchControls.swift"),
                        atomically: true, encoding: .utf8)
         }
+
+        // Game controllers work on every platform (required on Apple TV,
+        // optional MFi/DualSense/Xbox controllers on iPhone/iPad).
+        try generateControllerInput()
+            .write(to: sourcesApp.appendingPathComponent("ControllerInput.swift"),
+                   atomically: true, encoding: .utf8)
 
         // --- 7. Copy engine sources (or leave instructions) ---
         let engineCopied = copyEngineSources(to: sourcesEngine, fm: fm)
@@ -242,7 +253,46 @@ class ProjectExporter {
     // MARK: - Code generation
 
     private func generatePackageManifest(preset: ExportPreset) -> String {
-        """
+        // iPhone/iPad exports use the Swift Playgrounds app-package
+        // product type so Xcode runs them as a real installable app
+        // (bundle ID, accent color, orientations) with zero setup.
+        // Apple TV keeps a plain executable target — .iOSApplication
+        // does not support tvOS.
+        if preset.platform.supportsTouchControls {
+            return """
+            // swift-tools-version: 5.9
+            import PackageDescription
+            import AppleProductTypes
+
+            let package = Package(
+                name: "\(preset.gameName)",
+                platforms: [\(preset.platform.swiftPlatform)],
+                products: [
+                    .iOSApplication(
+                        name: "\(preset.gameName)",
+                        targets: ["App"],
+                        bundleIdentifier: "\(preset.bundleID)",
+                        displayVersion: "1.0",
+                        bundleVersion: "1",
+                        accentColor: .presetColor(.orange),
+                        supportedDeviceFamilies: [.pad, .phone],
+                        supportedInterfaceOrientations: [.landscapeRight, .landscapeLeft]
+                    )
+                ],
+                targets: [
+                    .executableTarget(
+                        name: "App",
+                        path: "Sources",
+                        resources: [
+                            .copy("Resources")
+                        ]
+                    )
+                ]
+            )
+            """
+        }
+
+        return """
         // swift-tools-version: 5.9
         import PackageDescription
 
@@ -345,6 +395,11 @@ class ProjectExporter {
             var engine = Engine()
             private var fallbackTexture: MTLTexture!
 
+            // Design resolution (from project.json): the game world is
+            // authored against this size and scaled to fit any screen.
+            let designWidth: Float = \(preset.designWidth)
+            let designHeight: Float = \(preset.designHeight)
+
             let vertices: [Vertex] = [
                 Vertex(position: simd_float2(-50,  50), textureCoordinate: simd_float2(0, 0)),
                 Vertex(position: simd_float2(-50, -50), textureCoordinate: simd_float2(0, 1)),
@@ -369,6 +424,10 @@ class ProjectExporter {
                 view.addSubview(metalView)
 
         \(touchSetup)
+
+                // Physical game controllers (required input on Apple TV,
+                // optional on iPhone/iPad).
+                ControllerInput.shared.start()
 
                 commandQueue = device.makeCommandQueue()!
                 buildPipeline(for: metalView)
@@ -426,6 +485,23 @@ class ProjectExporter {
                 assignTextures(to: rootNode, loader: loader)
 
                 engine.currentScene = scene
+
+                // Runtime scene changes (the changeScene action / JS
+                // call) load bundled scenes by name.
+                engine.sceneLoader = { [weak self] name in
+                    guard let self,
+                          let url = Bundle.main.url(forResource: name, withExtension: "json",
+                                                     subdirectory: "Resources/Scenes"),
+                          let sceneJSON = try? String(contentsOf: url, encoding: .utf8),
+                          let sceneRoot = SceneDeserializer.deserialize(jsonString: sceneJSON) else {
+                        return nil
+                    }
+                    let next = Scene()
+                    next.rootNode = sceneRoot
+                    SceneDeserializer.restoreActiveCamera(scene: next, fromJSON: sceneJSON)
+                    self.assignTextures(to: sceneRoot, loader: MTKTextureLoader(device: self.device))
+                    return next
+                }
             }
 
             private func loadNamedTexture(_ name: String, loader: MTKTextureLoader) -> MTLTexture? {
@@ -557,18 +633,26 @@ class ProjectExporter {
                 }
 
                 // Build view-projection matrix with camera + shake support.
+                // fitScale maps the design resolution onto the real
+                // screen, so the game shows the same world area on an
+                // iPhone SE, an iPad Pro, and a 4K TV.
+                let fitScale = min(w / designWidth, h / designHeight)
+
                 let projection = orthographicProjection(width: w, height: h)
                 let viewMatrix: simd_float4x4
                 if let camera = engine.currentScene?.activeCamera {
                     let camPos = camera.globalTransform.columns.3
-                    let z = camera.zoom
+                    let z = camera.zoom * fitScale
                     let cx = camPos.x + camera.shakeOffset.x
                     let cy = camPos.y + camera.shakeOffset.y
                     viewMatrix = translationMatrix(tx: w/2, ty: h/2)
                                * scaleMatrix(sx: z, sy: z)
                                * translationMatrix(tx: -cx, ty: -cy)
                 } else {
-                    viewMatrix = matrix_identity_float4x4
+                    // No camera: letterbox the design rect on screen.
+                    viewMatrix = translationMatrix(tx: (w - designWidth * fitScale) / 2,
+                                                   ty: (h - designHeight * fitScale) / 2)
+                               * scaleMatrix(sx: fitScale, sy: fitScale)
                 }
                 var uniforms = Uniforms(viewProjectionMatrix: projection * viewMatrix)
 
@@ -730,6 +814,79 @@ class ProjectExporter {
             private func hideJoystick() {
                 joystickBase.isHidden = true
                 joystickThumb.isHidden = true
+            }
+        }
+        """
+    }
+
+    /// A GameController adapter feeding the same InputManager action
+    /// names as the keyboard and touch overlay. On Apple TV this is
+    /// the primary input; on iPhone/iPad it lets MFi / DualSense /
+    /// Xbox controllers take over from the touch overlay.
+    private func generateControllerInput() -> String {
+        """
+        //  ControllerInput.swift — Auto-generated by Ingot Engine
+        //
+        //  Maps the left thumbstick + d-pad to move_left/right/up/down
+        //  and button A to "action". Works on Apple TV (Siri Remote's
+        //  game-controller profile and MFi controllers) and on
+        //  iPhone/iPad with any supported controller.
+
+        import Foundation
+        import GameController
+
+        final class ControllerInput {
+
+            static let shared = ControllerInput()
+
+            /// Stick deflection below this is treated as centered.
+            private let deadZone: Float = 0.3
+
+            private init() {}
+
+            func start() {
+                NotificationCenter.default.addObserver(
+                    forName: .GCControllerDidConnect, object: nil, queue: .main
+                ) { [weak self] note in
+                    if let controller = note.object as? GCController {
+                        self?.configure(controller)
+                    }
+                }
+                GCController.controllers().forEach(configure)
+                GCController.startWirelessControllerDiscovery()
+            }
+
+            private func configure(_ controller: GCController) {
+                if let gamepad = controller.extendedGamepad {
+                    gamepad.valueChangedHandler = { [weak self] pad, _ in
+                        self?.readExtended(pad)
+                    }
+                } else if let micro = controller.microGamepad {
+                    // Siri Remote / basic profile.
+                    micro.reportsAbsoluteDpadValues = true
+                    micro.valueChangedHandler = { [weak self] pad, _ in
+                        self?.readMicro(pad)
+                    }
+                }
+            }
+
+            private func readExtended(_ pad: GCExtendedGamepad) {
+                let x = pad.leftThumbstick.xAxis.value + pad.dpad.xAxis.value
+                let y = pad.leftThumbstick.yAxis.value + pad.dpad.yAxis.value
+                apply(x: x, y: y)
+                InputManager.shared.setActionPressed("action", isPressed: pad.buttonA.isPressed)
+            }
+
+            private func readMicro(_ pad: GCMicroGamepad) {
+                apply(x: pad.dpad.xAxis.value, y: pad.dpad.yAxis.value)
+                InputManager.shared.setActionPressed("action", isPressed: pad.buttonA.isPressed)
+            }
+
+            private func apply(x: Float, y: Float) {
+                InputManager.shared.setActionPressed("move_left",  isPressed: x < -deadZone)
+                InputManager.shared.setActionPressed("move_right", isPressed: x >  deadZone)
+                InputManager.shared.setActionPressed("move_up",    isPressed: y >  deadZone)
+                InputManager.shared.setActionPressed("move_down",  isPressed: y < -deadZone)
             }
         }
         """
