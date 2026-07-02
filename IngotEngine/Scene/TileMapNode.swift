@@ -33,6 +33,9 @@ class TileMapNode: Node {
     /// nil falls back to the editor's default texture at render time.
     var texture: MTLTexture?
 
+    /// The asset file the atlas came from (see SpriteNode.textureName).
+    var textureName: String?
+
     /// How the atlas texture is subdivided into tile cells.
     var atlasColumns: Int = 4 { didSet { atlasColumns = max(atlasColumns, 1) } }
     var atlasRows: Int = 4 { didSet { atlasRows = max(atlasRows, 1) } }

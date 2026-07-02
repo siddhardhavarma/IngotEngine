@@ -17,8 +17,15 @@ class ChatPanelViewController: NSViewController, NSTextFieldDelegate {
     private var historyTextView: NSTextView!
     private var promptField: NSTextField!
     private var spinner: NSProgressIndicator!
+    private var contextLabel: NSTextField!
 
     var onPromptSubmitted: ((String) -> Void)?
+
+    /// Shows what the copilot will act on (the current selection).
+    func setContext(_ text: String) {
+        guard isViewLoaded else { return }
+        contextLabel.stringValue = text
+    }
 
     override func loadView() {
         self.view = NSView()
@@ -29,6 +36,20 @@ class ChatPanelViewController: NSViewController, NSTextFieldDelegate {
 
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        // --- Header: panel name + selection context ---
+        let header = NSTextField(labelWithString: "✦ AI COPILOT")
+        header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        header.textColor = .tertiaryLabelColor
+        header.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(header)
+
+        contextLabel = NSTextField(labelWithString: "No selection — commands target the whole scene")
+        contextLabel.font = NSFont.systemFont(ofSize: 10)
+        contextLabel.textColor = .secondaryLabelColor
+        contextLabel.lineBreakMode = .byTruncatingTail
+        contextLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contextLabel)
 
         // --- Chat history ---
         let scrollView = NSScrollView()
@@ -77,7 +98,14 @@ class ChatPanelViewController: NSViewController, NSTextFieldDelegate {
             spinner.widthAnchor.constraint(equalToConstant: 16),
             spinner.heightAnchor.constraint(equalToConstant: 16),
 
-            scrollView.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            header.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
+            header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+
+            contextLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            contextLabel.leadingAnchor.constraint(equalTo: header.trailingAnchor, constant: 8),
+            contextLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+
+            scrollView.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 4),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -4),
             scrollView.bottomAnchor.constraint(equalTo: promptField.topAnchor, constant: -6),

@@ -515,15 +515,30 @@ class ProjectExporter {
                 return nil
             }
 
+            /// Loads a texture by exact asset file name (e.g. "hero.png"),
+            /// as recorded in the node's textureName by the editor.
+            private func loadAssetTexture(_ fileName: String, loader: MTKTextureLoader) -> MTLTexture? {
+                for subdirectory in ["Resources", "Resources/Assets"] {
+                    if let url = Bundle.main.url(forResource: fileName, withExtension: nil,
+                                                  subdirectory: subdirectory),
+                       let tex = try? loader.newTexture(URL: url, options: [.SRGB: false as NSNumber]) {
+                        return tex
+                    }
+                }
+                return nil
+            }
+
             private func assignTextures(to node: Node, loader: MTKTextureLoader) {
                 if let sprite = node as? SpriteNode, sprite.texture == nil,
                    !(node is ShapeNode), !(node is TextNode) {
-                    sprite.texture = loadNamedTexture(sprite.name, loader: loader)
+                    sprite.texture = sprite.textureName.flatMap { loadAssetTexture($0, loader: loader) }
+                        ?? loadNamedTexture(sprite.name, loader: loader)
                         ?? loadNamedTexture("test_sprite", loader: loader)
                         ?? fallbackTexture
                 }
                 if let tileMap = node as? TileMapNode, tileMap.texture == nil {
-                    tileMap.texture = loadNamedTexture(tileMap.name, loader: loader)
+                    tileMap.texture = tileMap.textureName.flatMap { loadAssetTexture($0, loader: loader) }
+                        ?? loadNamedTexture(tileMap.name, loader: loader)
                         ?? loadNamedTexture("test_sprite", loader: loader)
                         ?? fallbackTexture
                 }

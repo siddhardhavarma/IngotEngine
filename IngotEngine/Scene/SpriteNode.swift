@@ -16,6 +16,11 @@ class SpriteNode: Node {
     /// nil means the sprite won't be rendered (it's invisible).
     var texture: MTLTexture?
 
+    /// The asset file this sprite's texture came from (e.g. "hero.png"
+    /// in the project's Assets/). Serialized with the scene so the
+    /// editor and exported games can restore the texture on load.
+    var textureName: String?
+
     /// The UV rectangle within the texture to display.
     ///
     ///   x = u_start   (0–1, left edge of the sub-region)
