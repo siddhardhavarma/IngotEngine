@@ -120,8 +120,9 @@ class EventSheetViewController: NSViewController {
     private func createRuleRow(rule: Rule, index: Int) -> NSView {
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor(white: 0.15, alpha: 0.3).cgColor
-        container.layer?.cornerRadius = 4
+        // Adaptive fill that reads correctly in light AND dark mode.
+        container.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+        container.layer?.cornerRadius = 6
         container.translatesAutoresizingMaskIntoConstraints = false
 
         // "When" label.

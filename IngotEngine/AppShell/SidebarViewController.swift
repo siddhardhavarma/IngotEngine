@@ -9,7 +9,8 @@ import Cocoa
 
 class SidebarViewController: NSViewController,
                               NSOutlineViewDataSource,
-                              NSOutlineViewDelegate {
+                              NSOutlineViewDelegate,
+                              NSTextFieldDelegate {
 
     private var outlineView: NSOutlineView!
 
@@ -28,6 +29,13 @@ class SidebarViewController: NSViewController,
             outlineView?.reloadData()
             outlineView?.expandItem(nil, expandChildren: true)
         }
+    }
+
+    /// Re-reads the tree (names, enabled state, new/removed nodes).
+    /// Called after AI commands and inspector edits.
+    func refresh() {
+        outlineView?.reloadData()
+        outlineView?.expandItem(nil, expandChildren: true)
     }
 
     override func loadView() {
@@ -273,6 +281,9 @@ class SidebarViewController: NSViewController,
             let textField = NSTextField(labelWithString: "")
             textField.font = NSFont.systemFont(ofSize: 13)
             textField.translatesAutoresizingMaskIntoConstraints = false
+            // Double-click renames the node in place.
+            textField.isEditable = true
+            textField.delegate = self
             cell.addSubview(textField)
             cell.textField = textField
 
@@ -307,6 +318,25 @@ class SidebarViewController: NSViewController,
         } else {
             onNodeSelected?(nil)
         }
+    }
+
+    // MARK: - NSTextFieldDelegate (inline rename)
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        let row = outlineView.row(for: field)
+        guard row >= 0, let node = outlineView.item(atRow: row) as? Node else { return }
+
+        let newName = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !newName.isEmpty, newName != node.name else {
+            field.stringValue = node.name
+            return
+        }
+
+        onBeforeTreeEdit?()
+        node.name = newName
+        // Re-select so the inspector and event sheet pick up the rename.
+        onNodeSelected?(node)
     }
 }
 

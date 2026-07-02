@@ -22,10 +22,14 @@ class ShapeNode: SpriteNode {
     }
 
     /// The width of the shape in pixels.
-    var shapeWidth: Float = 100
+    var shapeWidth: Float = 100 {
+        didSet { needsTextureUpdate = true }
+    }
 
     /// The height of the shape in pixels.
-    var shapeHeight: Float = 100
+    var shapeHeight: Float = 100 {
+        didSet { needsTextureUpdate = true }
+    }
 
     private var needsTextureUpdate = true
     private weak var cachedDevice: MTLDevice?
