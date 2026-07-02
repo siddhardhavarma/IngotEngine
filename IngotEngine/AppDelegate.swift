@@ -41,6 +41,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.contentViewController = launcher
+
+        // CRITICAL under ARC: programmatic NSWindows default to
+        // isReleasedWhenClosed = true, so close() would release the
+        // window a second time on top of our strong property —
+        // an over-release crash in objc_release. ARC owns the window;
+        // close() must only order it out.
+        window.isReleasedWhenClosed = false
+
         window.center()
         window.makeKeyAndOrderFront(nil)
 
@@ -53,10 +61,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ProjectManager.shared.createOrOpenProject(at: url)
         ProjectLauncherViewController.addRecent(url)
 
-        launcherWindow?.close()
-        launcherWindow = nil
-
-        openEditorWindow()
+        // Defer the window swap one runloop turn so the save/open
+        // panel sheet that invoked us has fully unwound before its
+        // host window disappears.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.launcherWindow?.close()
+            self.launcherWindow = nil
+            self.openEditorWindow()
+        }
     }
 
     private func openEditorWindow() {
@@ -73,6 +86,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
         window.toolbarStyle = .unified
+
+        // Same ARC ownership rule as the launcher window.
+        window.isReleasedWhenClosed = false
 
         let editorVC = EditorViewController()
         window.contentViewController = editorVC
