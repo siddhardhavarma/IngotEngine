@@ -149,15 +149,125 @@ class AIEngineBridge {
         case .local:
             rawResponse = "[]"
         case .openAI:
-            rawResponse = try await sendToOpenAI(prompt: prompt, apiKey: settings.openAIKey)
+            rawResponse = try await sendToOpenAI(prompt: prompt, apiKey: settings.openAIKey,
+                                                 model: settings.openAIModel)
         case .claude:
-            rawResponse = try await sendToClaude(prompt: prompt, apiKey: settings.claudeKey)
+            rawResponse = try await sendToClaude(prompt: prompt, apiKey: settings.claudeKey,
+                                                 model: settings.claudeModel)
         case .gemini:
-            rawResponse = try await sendToGemini(prompt: prompt, apiKey: settings.geminiKey)
+            rawResponse = try await sendToGemini(prompt: prompt, apiKey: settings.geminiKey,
+                                                 model: settings.geminiModel)
         }
 
         // Strip markdown fences and boilerplate before returning.
         return stripToJSON(rawResponse)
+    }
+
+    // MARK: - Script Generation (built-in code editor)
+
+    /// The complete engine scripting reference, given to the LLM so
+    /// generated code only uses APIs that actually exist.
+    static let scriptingReference = """
+    Ingot Engine JavaScript scripting reference:
+
+    Every script file defines a lifecycle object:
+        var Script = {
+            start: function(node) { /* once, when the scene starts */ },
+            update: function(node, dt, time) { /* every frame */ }
+        };
+    dt = seconds since last frame, time = seconds since play started.
+
+    Node API (available on `node` and anything getChild returns):
+      node.x, node.y                — position (pixels, +Y is UP)
+      node.rotationDegrees          — rotation
+      node.scaleX, node.scaleY      — scale
+      node.zIndexJS                 — draw order (higher = on top)
+      node.visible                  — enabled/visible flag
+      node.name                     — node name (read-only)
+      node.jsZoom                   — camera zoom (CameraNode only)
+      node.setFrame(cols, rows, col, row) — sprite-sheet frame
+      node.getChild("Name")         — find a descendant by name
+      node.emitSignal("Name")       — broadcast an EventBus signal
+      node.setVelocity(x, y)        — set physics velocity (needs a body)
+      node.spawn("Prefab", x, y)    — instantiate a saved prefab
+      node.changeScene("Scene")     — switch scenes at end of frame
+      node.destroy()                — remove the node
+
+    Input API (global `Input`):
+      Input.isActionPressed("move_left")      — held this frame
+      Input.isActionJustPressed("action")     — first frame only
+      Actions: move_left, move_right, move_up, move_down, action.
+
+    Physics notes: bodies with velocity are integrated by the engine;
+    world gravity applies unless gravityScale is 0. For a jump: check
+    isActionJustPressed then node.setVelocity(currentX, 600).
+    """
+
+    /// Generates or rewrites a lifecycle script with full engine
+    /// context. Returns pure JavaScript (fences stripped).
+    func generateScript(request: String,
+                        existingCode: String,
+                        scene: Scene?,
+                        settings: AISettings) async throws -> String {
+        var sceneSummary = "(no scene loaded)"
+        if let scene = scene {
+            let names = ([scene.rootNode] + scene.rootNode.allDescendants())
+                .map { "\($0.name) (\(type(of: $0)))" }
+                .joined(separator: ", ")
+            sceneSummary = names
+        }
+
+        let prompt = """
+        You are the code assistant inside Ingot Engine's script editor.
+
+        \(AIEngineBridge.scriptingReference)
+
+        Nodes in the current scene: \(sceneSummary)
+
+        Current content of the script file being edited:
+        ```javascript
+        \(existingCode.isEmpty ? "// (empty file)" : existingCode)
+        ```
+
+        Task: \(request)
+
+        Respond with ONLY the complete, final JavaScript file content —
+        the full `var Script = {...};` definition. No markdown fences,
+        no explanation, no comments about what changed.
+        """
+
+        let raw: String
+        switch settings.provider {
+        case .local:
+            raw = existingCode
+        case .openAI:
+            raw = try await sendToOpenAI(prompt: prompt, apiKey: settings.openAIKey,
+                                         model: settings.openAIModel)
+        case .claude:
+            raw = try await sendToClaude(prompt: prompt, apiKey: settings.claudeKey,
+                                         model: settings.claudeModel)
+        case .gemini:
+            raw = try await sendToGemini(prompt: prompt, apiKey: settings.geminiKey,
+                                         model: settings.geminiModel)
+        }
+
+        return AIEngineBridge.stripCodeFences(raw)
+    }
+
+    /// Removes markdown code fences from an LLM code response.
+    static func stripCodeFences(_ text: String) -> String {
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("```") {
+            // Drop the opening fence line (``` or ```javascript).
+            if let firstNewline = trimmed.firstIndex(of: "\n") {
+                trimmed = String(trimmed[trimmed.index(after: firstNewline)...])
+            }
+            // Drop the closing fence.
+            if let closingRange = trimmed.range(of: "```", options: .backwards) {
+                trimmed = String(trimmed[..<closingRange.lowerBound])
+            }
+        }
+        return trimmed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - JSON Stripping
@@ -194,9 +304,9 @@ class AIEngineBridge {
 
     // MARK: - Provider Implementations
 
-    /// OpenAI Chat Completions API (GPT-4o).
+    /// OpenAI Chat Completions API.
     /// Temperature 0.0 for maximum structural consistency.
-    private func sendToOpenAI(prompt: String, apiKey: String) async throws -> String {
+    private func sendToOpenAI(prompt: String, apiKey: String, model: String) async throws -> String {
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -204,7 +314,7 @@ class AIEngineBridge {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": "gpt-4o",
+            "model": model,
             "messages": [
                 ["role": "system", "content": "Respond ONLY with a JSON array of commands. No markdown, no prose."],
                 ["role": "user", "content": prompt]
@@ -226,7 +336,7 @@ class AIEngineBridge {
 
     /// Anthropic Claude Messages API.
     /// Temperature 0.0 for maximum structural consistency.
-    private func sendToClaude(prompt: String, apiKey: String) async throws -> String {
+    private func sendToClaude(prompt: String, apiKey: String, model: String) async throws -> String {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -235,7 +345,7 @@ class AIEngineBridge {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": "claude-sonnet-4-20250514",
+            "model": model,
             "max_tokens": 4096,
             "temperature": 0.0,
             "system": "Respond ONLY with a JSON array of commands. No markdown, no prose.",
@@ -257,8 +367,8 @@ class AIEngineBridge {
 
     /// Google Gemini GenerateContent API.
     /// Temperature 0.0 for maximum structural consistency.
-    private func sendToGemini(prompt: String, apiKey: String) async throws -> String {
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\(apiKey)"
+    private func sendToGemini(prompt: String, apiKey: String, model: String) async throws -> String {
+        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)"
         let url = URL(string: urlString)!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

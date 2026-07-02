@@ -2,7 +2,13 @@
 //  AppDelegate.swift
 //  IngotEngine
 //
-//  Professional editor window with NSToolbar in the title bar.
+//  App startup flow:
+//
+//    launch → Project Launcher (recents / new / open) → Editor window
+//
+//  The launcher is the first thing users see (like Godot's Project
+//  Manager). Choosing or creating a project closes the launcher and
+//  opens the full editor for that project.
 //
 
 import Cocoa
@@ -10,30 +16,50 @@ import Cocoa
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
 
-    var window: NSWindow?
+    var launcherWindow: NSWindow?
+    var editorWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        showProjectLauncher()
+    }
 
-        if ProjectManager.shared.currentProjectURL == nil {
-            let panel = NSOpenPanel()
-            panel.title = "Select or Create a Project Folder"
-            panel.message = "Choose a folder for your game project."
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.canCreateDirectories = true
-            panel.prompt = "Open Project"
+    // MARK: - Project launcher
 
-            let response = panel.runModal()
-            if response == .OK, let url = panel.url {
-                ProjectManager.shared.createOrOpenProject(at: url)
-            } else {
-                let fallback = FileManager.default.urls(for: .documentDirectory,
-                                                         in: .userDomainMask).first!
-                    .appendingPathComponent("IngotProject")
-                ProjectManager.shared.createOrOpenProject(at: fallback)
-            }
+    private func showProjectLauncher() {
+        let launcher = ProjectLauncherViewController()
+        launcher.onProjectChosen = { [weak self] url in
+            self?.openProject(at: url)
         }
 
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ingot Engine"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.contentViewController = launcher
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+
+        launcherWindow = window
+    }
+
+    // MARK: - Editor
+
+    private func openProject(at url: URL) {
+        ProjectManager.shared.createOrOpenProject(at: url)
+        ProjectLauncherViewController.addRecent(url)
+
+        launcherWindow?.close()
+        launcherWindow = nil
+
+        openEditorWindow()
+    }
+
+    private func openEditorWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1440, height: 860),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -61,7 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.makeKeyAndOrderFront(nil)
 
-        self.window = window
+        editorWindow = window
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {}
