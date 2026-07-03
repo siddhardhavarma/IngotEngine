@@ -379,7 +379,6 @@ class AIEngineBridge {
     }
 
     /// Anthropic Claude Messages API.
-    /// Temperature 0.0 for maximum structural consistency.
     private func sendToClaude(prompt: String, apiKey: String, model: String) async throws -> String {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
         var request = URLRequest(url: url)
@@ -391,7 +390,6 @@ class AIEngineBridge {
         let body: [String: Any] = [
             "model": model,
             "max_tokens": 4096,
-            "temperature": 0.0,
             "system": "Respond ONLY with a JSON array of commands. No markdown, no prose.",
             "messages": [
                 ["role": "user", "content": prompt]
@@ -403,7 +401,8 @@ class AIEngineBridge {
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let contentArray = json["content"] as? [[String: Any]],
-              let text = contentArray.first?["text"] as? String else {
+              let textBlock = contentArray.first(where: { $0["type"] as? String == "text" }),
+              let text = textBlock["text"] as? String else {
             throw unexpectedFormat(data)
         }
         return text
