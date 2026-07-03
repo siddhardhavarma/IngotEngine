@@ -80,6 +80,16 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     /// Closures that re-read model values into controls (refreshUI).
     private var valueRefreshers: [() -> Void] = []
 
+    /// Views whose width must track the panel (text fields, separators).
+    /// Sized explicitly — autoresizing masks accumulate bogus deltas
+    /// when the form is rebuilt while the container is mid-layout.
+    private var resizableViews: [NSView] = []
+
+    /// The width the form lays out against.
+    private var formWidth: CGFloat {
+        max(scrollView.contentSize.width, 240)
+    }
+
     /// Tile-paint controls (weak — they only exist for TileMapNodes).
     private weak var paintModeCheckbox: NSButton?
     private weak var paintIndexField: NSTextField?
@@ -133,7 +143,17 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        contentView.frame.size.width = scrollView.contentSize.width
+        contentView.frame.size.width = formWidth
+        applyFormWidth()
+    }
+
+    /// Explicitly resizes width-tracking views to the current panel
+    /// width (labels and buttons keep their fixed frames).
+    private func applyFormWidth() {
+        let width = formWidth
+        for view in resizableViews {
+            view.frame.size.width = max(width - view.frame.origin.x - margin, 60)
+        }
     }
 
     // MARK: - Form rebuilding
@@ -145,6 +165,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         colorHandlers.removeAll()
         buttonHandlers.removeAll()
         valueRefreshers.removeAll()
+        resizableViews.removeAll()
         yCursor = 8
     }
 
@@ -164,9 +185,8 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
 
         buildSections(for: node)
 
-        contentView.frame = NSRect(x: 0, y: 0,
-                                   width: max(scrollView.contentSize.width, 240),
-                                   height: yCursor)
+        contentView.frame = NSRect(x: 0, y: 0, width: formWidth, height: yCursor)
+        applyFormWidth()
         onPaintStateChanged?()
     }
 
@@ -379,8 +399,8 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         let separator = NSBox()
         separator.boxType = .separator
         separator.frame = NSRect(x: margin, y: yCursor + 20, width: 220, height: 1)
-        separator.autoresizingMask = [.width]
         contentView.addSubview(separator)
+        resizableViews.append(separator)
 
         yCursor += 28
     }
@@ -402,8 +422,8 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         field.delegate = self
         field.controlSize = .small
         field.frame = NSRect(x: margin + 82, y: yCursor - 2, width: 130, height: 20)
-        field.autoresizingMask = [.width]
         contentView.addSubview(field)
+        resizableViews.append(field)
 
         yCursor += 24
         return field
