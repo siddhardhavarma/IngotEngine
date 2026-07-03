@@ -30,7 +30,10 @@ class AssetGenerator {
 
     // MARK: - Image Generation
 
-    func generateImage(prompt: String, apiKey: String) async throws -> MTLTexture? {
+    /// Generates an image, saves it into the project's Assets/ folder,
+    /// and returns the texture together with the saved file name (so
+    /// callers can record `textureName` for persistence).
+    func generateImage(prompt: String, apiKey: String) async throws -> (texture: MTLTexture, fileName: String)? {
         let url = URL(string: "https://api.openai.com/v1/images/generations")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -75,7 +78,7 @@ class AssetGenerator {
         ]
         let texture = try await loader.newTexture(data: imageData, options: options)
 
-        return texture
+        return (texture, fileName)
     }
 
     // MARK: - Sound Generation

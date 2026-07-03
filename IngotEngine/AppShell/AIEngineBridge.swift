@@ -41,12 +41,17 @@ class AIEngineBridge {
 
     // MARK: - Prompt Building
 
-    func buildPrompt(userText: String, currentScene: Scene) -> String {
+    /// Builds the full prompt. `history` carries recent exchanges
+    /// ("User: …" / "Executed: …" lines) so follow-ups like "make it
+    /// bigger" resolve against what was just discussed.
+    func buildPrompt(userText: String, currentScene: Scene, history: [String] = []) -> String {
         let sceneJSON = SceneSerializer.serialize(currentScene)
         let prefabs = PrefabLibrary.list()
         let prefabList = prefabs.isEmpty ? "(none saved yet)" : prefabs.joined(separator: ", ")
         let scenes = ProjectManager.shared.listScenes()
         let sceneList = scenes.isEmpty ? "(none saved yet)" : scenes.joined(separator: ", ")
+        let animations = AnimationLibrary.list()
+        let animationList = animations.isEmpty ? "(none defined yet)" : animations.joined(separator: ", ")
 
         return """
         [System Prompt]
@@ -58,6 +63,7 @@ class AIEngineBridge {
 
         Saved prefabs: \(prefabList)
         Saved scenes: \(sceneList)
+        Animation clips: \(animationList)
 
         You must respond ONLY with a JSON array of commands. Each command is an object with an "action" key.
 
@@ -112,7 +118,7 @@ class AIEngineBridge {
         17. "addRule" — add a visual-scripting rule to a node's event sheet.
             Required: "targetName", "event" (object), "actions" (array of objects)
             Event types: {"type":"onActionHeld","action":"move_left"}, {"type":"onActionJustPressed","action":"action"}, {"type":"everyFrame"}, {"type":"onStart"}, {"type":"onCollision"}, {"type":"onSignal","signal":"name"}
-            Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"setVelocity","x":0,"y":600}, {"type":"spawnPrefab","prefab":"Enemy","x":100,"y":300}, {"type":"changeScene","scene":"Level2"}, {"type":"destroy"}
+            Action types: {"type":"move","x":100,"y":0}, {"type":"rotate","degreesPerSecond":45}, {"type":"emitSignal","name":"sig"}, {"type":"playSound","fileName":"bump.wav"}, {"type":"setProperty","property":"scaleX","value":2}, {"type":"setVelocity","x":0,"y":600}, {"type":"spawnPrefab","prefab":"Enemy","x":100,"y":300}, {"type":"changeScene","scene":"Level2"}, {"type":"playAnimation","animation":"walk"}, {"type":"destroy"}
             Input actions available: move_left, move_right, move_up, move_down, action (Space / touch button).
             Timers emit their "signal" on timeout — pair a TimerNode with onSignal rules for spawn waves.
             Triggers (CollisionNode) emit their "triggerSignal" when something enters them.
@@ -122,7 +128,7 @@ class AIEngineBridge {
             Required: "targetName", "code" (JavaScript string using lifecycle format)
             The code MUST use this lifecycle pattern:
             var Script = { start: function(node) {}, update: function(node, dt, time) {} };
-            Node API: node.x, node.y, node.rotationDegrees, node.scaleX, node.scaleY, node.zIndexJS, node.visible, node.name, node.jsZoom (cameras), node.setFrame(cols,rows,col,row), node.getChild(name), node.emitSignal(name), node.setVelocity(x,y), node.spawn(prefabName,x,y), node.destroy()
+            Node API: node.x, node.y, node.rotationDegrees, node.scaleX, node.scaleY, node.zIndexJS, node.visible, node.name, node.jsZoom (cameras), node.setFrame(cols,rows,col,row), node.getChild(name), node.emitSignal(name), node.setVelocity(x,y), node.spawn(prefabName,x,y), node.playAnimation(clipName), node.stopAnimation(), node.destroy()
             Input API: Input.isActionPressed(name), Input.isActionJustPressed(name)
 
         19. "generateTexture" — AI-generate an image and apply it to a sprite.
@@ -130,6 +136,16 @@ class AIEngineBridge {
 
         20. "generateSound" — AI-generate a sound effect and play it.
             Required: "prompt" (sound description)
+
+        21. "defineAnimation" — create/update a named sprite-sheet animation clip.
+            Required: "name", "gridWidth", "gridHeight" (sheet layout), "startFrame", "endFrame" (0-based, inclusive)
+            Optional: "fps" (default 8), "loops" (default true)
+
+        22. "setDefaultAnimation" — auto-play a clip on a sprite when the scene starts.
+            Required: "targetName" (a SpriteNode), "animation" (clip name)
+
+        23. "playAnimation" — play a clip on a sprite right now (during Play mode).
+            Required: "targetName" (a SpriteNode), "animation" (clip name)
 
         Example response:
         [
@@ -141,6 +157,7 @@ class AIEngineBridge {
 
         Do not include any text outside the JSON array. No markdown, no explanation.
 
+        \(history.isEmpty ? "" : "[Recent Conversation]\n" + history.joined(separator: "\n") + "\n")
         [User Prompt]
         \(userText)
         """
@@ -444,25 +461,34 @@ class AIEngineBridge {
     /// Parses the LLM's JSON array and executes each command in order.
     /// Commands are untyped dictionaries — every handler validates its
     /// own fields, so one malformed command never aborts the batch.
+    /// Returns a compact summary of what ran ("createNode(Coin)") for
+    /// the conversation history.
+    @discardableResult
     func executeCommands(jsonString: String,
                          in scene: Scene,
                          settings: AISettings,
-                         onLog: @escaping @MainActor (String) -> Void) {
+                         onLog: @escaping @MainActor (String) -> Void) -> [String] {
 
         guard let data = jsonString.data(using: .utf8),
               let commands = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             onLog("Error: Could not decode AI commands as a JSON array.")
-            return
+            return []
         }
 
         guard !commands.isEmpty else {
             onLog("The model returned no commands — try rephrasing the request.")
-            return
+            return []
         }
         onLog("Running \(commands.count) command\(commands.count == 1 ? "" : "s")…")
 
+        var executed: [String] = []
         for command in commands {
             let action = command["action"] as? String ?? ""
+            let subject = (command["targetName"] as? String)
+                ?? (command["name"] as? String)
+                ?? (command["prefabName"] as? String)
+                ?? ""
+            executed.append(subject.isEmpty ? action : "\(action)(\(subject))")
             switch action {
             case "createNode":        executeCreateNode(command, in: scene, onLog: onLog)
             case "deleteNode":        executeDeleteNode(command, in: scene, onLog: onLog)
@@ -482,6 +508,9 @@ class AIEngineBridge {
             case "addToGroup":        executeAddToGroup(command, in: scene, onLog: onLog)
             case "addRule":           executeAddRule(command, in: scene, onLog: onLog)
             case "attachScript":      executeAttachScript(command, in: scene, onLog: onLog)
+            case "defineAnimation":   executeDefineAnimation(command, onLog: onLog)
+            case "setDefaultAnimation": executeSetDefaultAnimation(command, in: scene, onLog: onLog)
+            case "playAnimation":     executePlayAnimation(command, in: scene, onLog: onLog)
             case "generateTexture":   dispatchGenerateTexture(command, in: scene, settings: settings, onLog: onLog)
             case "generateSound":     dispatchGenerateSound(command, settings: settings, onLog: onLog)
             default:
@@ -908,6 +937,59 @@ class AIEngineBridge {
         }
         node.groups.insert(group)
         onLog("Added \"\(node.name)\" to group \"\(group)\".")
+    }
+
+    // MARK: - Animation commands
+
+    private func executeDefineAnimation(_ cmd: [String: Any], onLog: (String) -> Void) {
+        guard let name = cmd["name"] as? String,
+              let gridWidth = int(cmd, "gridWidth"),
+              let gridHeight = int(cmd, "gridHeight"),
+              let startFrame = int(cmd, "startFrame"),
+              let endFrame = int(cmd, "endFrame") else {
+            onLog("Error: defineAnimation requires name, gridWidth, gridHeight, startFrame, endFrame.")
+            return
+        }
+
+        let clip = AnimationClip(
+            name: name,
+            gridWidth: max(gridWidth, 1),
+            gridHeight: max(gridHeight, 1),
+            startFrame: max(startFrame, 0),
+            endFrame: max(endFrame, startFrame),
+            fps: float(cmd, "fps") ?? 8,
+            loops: cmd["loops"] as? Bool ?? true
+        )
+
+        if AnimationLibrary.save(clip) {
+            onLog("Defined animation \"\(name)\" (\(clip.frameCount) frames @ \(clip.fps) fps).")
+        } else {
+            onLog("Error: Could not save animation \"\(name)\".")
+        }
+    }
+
+    private func executeSetDefaultAnimation(_ cmd: [String: Any], in scene: Scene,
+                                            onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let sprite = node as? SpriteNode,
+              let animation = cmd["animation"] as? String else {
+            onLog("Error: setDefaultAnimation requires targetName (a SpriteNode) and animation.")
+            return
+        }
+        sprite.defaultAnimationName = animation
+        onLog("\"\(node.name)\" auto-plays \"\(animation)\" on scene start.")
+    }
+
+    private func executePlayAnimation(_ cmd: [String: Any], in scene: Scene,
+                                      onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let sprite = node as? SpriteNode,
+              let animation = cmd["animation"] as? String else {
+            onLog("Error: playAnimation requires targetName (a SpriteNode) and animation.")
+            return
+        }
+        sprite.playAnimation(animation)
+        onLog("Playing \"\(animation)\" on \"\(node.name)\".")
     }
 
     // MARK: - Behavior / script commands

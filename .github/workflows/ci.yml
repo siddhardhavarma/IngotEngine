@@ -1,0 +1,53 @@
+# Ingot Engine CI
+#
+# Two jobs on every push/PR:
+#   1. engine-tests  — the headless engine core (Core/Logic/Physics/
+#                      Scene/Platform) compiled via the root
+#                      Package.swift and exercised with `swift test`.
+#                      No GPU, no window — this is why Engine.swift
+#                      imports Foundation only.
+#   2. editor-build  — the full macOS editor app compiled with
+#                      xcodebuild, so AppShell/UI changes can't land
+#                      broken. Code signing is disabled (CI has no
+#                      certificates).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine-tests:
+    name: Engine tests (headless)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Run engine tests
+        run: swift test
+
+  editor-build:
+    name: Editor build (macOS app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Shaders.metal needs the Metal toolchain, which newer Xcodes
+      # download on demand. Tolerate failure — some runner images
+      # already include it.
+      - name: Ensure Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Build IngotEngine.app
+        run: |
+          xcodebuild build \
+            -project IngotEngine.xcodeproj \
+            -scheme IngotEngine \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=""

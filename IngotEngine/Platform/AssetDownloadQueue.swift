@@ -85,17 +85,21 @@ class AssetDownloadQueue {
             do {
                 // This runs on a background thread. The main thread is free
                 // to keep rendering at 60 FPS with the placeholder showing.
-                let realTexture = try await generator.generateImage(
+                let result = try await generator.generateImage(
                     prompt: prompt,
                     apiKey: apiKey
                 )
 
                 // --- Step 3: Swap in the real texture on the main thread ---
                 await MainActor.run {
-                    if let texture = realTexture {
-                        node.texture = texture
+                    if let result {
+                        node.texture = result.texture
+                        // Record the Assets/ file so the texture survives
+                        // save/load and rides into exports — same contract
+                        // as Asset Library assignments.
+                        node.textureName = result.fileName
                         node.isLoadingTexture = false
-                        onLog("Texture applied to \"\(nodeName)\".")
+                        onLog("Texture applied to \"\(nodeName)\" (saved as \(result.fileName)).")
                     } else {
                         // API returned nil — keep the placeholder so the
                         // node stays visible rather than disappearing.

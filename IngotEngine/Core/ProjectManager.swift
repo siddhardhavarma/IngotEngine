@@ -53,6 +53,9 @@ class ProjectManager {
 
         currentProjectURL = url
 
+        // Per-project caches must not leak across projects.
+        AnimationLibrary.invalidate()
+
         // Load existing project.json, or create a default one.
         let projectFileURL = url.appendingPathComponent("project.json")
         if fm.fileExists(atPath: projectFileURL.path),

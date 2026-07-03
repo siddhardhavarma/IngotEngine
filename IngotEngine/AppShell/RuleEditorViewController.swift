@@ -36,7 +36,7 @@ class RuleEditorViewController: NSViewController {
 
     private let actionTypes = [
         "Move", "Rotate", "Emit Signal", "Play Sound", "Set Property",
-        "Set Velocity", "Spawn Prefab", "Change Scene", "Destroy",
+        "Set Velocity", "Spawn Prefab", "Change Scene", "Play Animation", "Destroy",
     ]
 
     // Up to three parameter placeholders per action type ("" = unused).
@@ -49,6 +49,7 @@ class RuleEditorViewController: NSViewController {
         ["X px/s", "Y px/s", ""],           // Set Velocity
         ["prefab", "X", "Y"],               // Spawn Prefab
         ["scene name", "", ""],             // Change Scene
+        ["clip name", "", ""],              // Play Animation
         ["", "", ""],                       // Destroy
     ]
 
@@ -198,8 +199,10 @@ class RuleEditorViewController: NSViewController {
                 addActionRow(typeIndex: 6, params: [n, "\(x)", "\(y)"])
             case .changeScene(let s):
                 addActionRow(typeIndex: 7, params: [s, "", ""])
+            case .playAnimation(let a):
+                addActionRow(typeIndex: 8, params: [a, "", ""])
             case .destroy:
-                addActionRow(typeIndex: 8, params: ["", "", ""])
+                addActionRow(typeIndex: 9, params: ["", "", ""])
             }
         }
     }
@@ -314,6 +317,7 @@ class RuleEditorViewController: NSViewController {
         case 5: return .setVelocity(x: num[0], y: num[1])
         case 6: return text[0].isEmpty ? nil : .spawnPrefab(text[0], x: num[1], y: num[2])
         case 7: return text[0].isEmpty ? nil : .changeScene(text[0])
+        case 8: return text[0].isEmpty ? nil : .playAnimation(text[0])
         default: return .destroy
         }
     }

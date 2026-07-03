@@ -131,6 +131,15 @@ class ProjectExporter {
             copyFiles(from: scenesDir, to: sourcesScenes,
                       extensions: Set(["json"]), fm: fm)
         }
+        // Animation clips (node.playAnimation resolves these on device;
+        // AnimationLibrary reads <project root>/animations.json and the
+        // exported game points its project root at Resources/).
+        if let animationsFile = ProjectManager.shared.currentProjectURL?
+            .appendingPathComponent("animations.json"),
+           fm.fileExists(atPath: animationsFile.path) {
+            try? fm.copyItem(at: animationsFile,
+                             to: sourcesResources.appendingPathComponent("animations.json"))
+        }
 
         // --- 5. Copy Metal shaders ---
         if let metalURL = Bundle.main.url(forResource: "Shaders", withExtension: "metal") {

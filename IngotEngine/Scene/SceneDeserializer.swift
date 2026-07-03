@@ -176,6 +176,9 @@ struct SceneDeserializer {
             if let textureName = dict["textureName"] as? String {
                 sprite.textureName = textureName
             }
+            if let animation = dict["defaultAnimation"] as? String {
+                sprite.defaultAnimationName = animation
+            }
         }
 
         if let tileMap = node as? TileMapNode,
@@ -295,6 +298,9 @@ struct SceneDeserializer {
             guard let name = dict["prefab"] as? String,
                   let x = dict["x"] as? Double, let y = dict["y"] as? Double else { return nil }
             return .spawnPrefab(name, x: Float(x), y: Float(y))
+        case "playAnimation":
+            guard let name = dict["animation"] as? String else { return nil }
+            return .playAnimation(name)
         case "changeScene":
             guard let name = dict["scene"] as? String else { return nil }
             return .changeScene(name)

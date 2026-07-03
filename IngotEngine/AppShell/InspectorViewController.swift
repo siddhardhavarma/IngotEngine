@@ -243,6 +243,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
                                     blue: CGFloat(sprite.modulate.z), alpha: CGFloat(sprite.modulate.w)) },
                      set: { c in sprite.modulate = simd_float4(Float(c.redComponent), Float(c.greenComponent),
                                                                Float(c.blueComponent), Float(c.alphaComponent)) })
+            textRow("Animation", placeholder: "clip name (auto-plays)",
+                    get: { sprite.defaultAnimationName ?? "" }) { value in
+                sprite.defaultAnimationName = value.isEmpty ? nil : value
+            }
         }
 
         if let audio = node as? AudioNode {

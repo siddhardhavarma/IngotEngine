@@ -45,6 +45,8 @@ import simd
     func setVelocity(_ x: Float, _ y: Float)
     func spawn(_ prefabName: String, _ x: Float, _ y: Float) -> Node?
     func changeScene(_ name: String)
+    func playAnimation(_ name: String)
+    func stopAnimation()
     func destroy()
 }
 
@@ -127,6 +129,17 @@ extension Node: NodeJSExport {
     /// JS: node.changeScene("Level2")
     @objc func changeScene(_ name: String) {
         Engine.current?.requestScene(named: name)
+    }
+
+    /// Plays a named AnimationLibrary clip. No-op on plain Nodes;
+    /// SpriteNode overrides. JS: node.playAnimation("walk")
+    @objc func playAnimation(_ name: String) {
+        // No-op: plain Nodes have no sprite frames.
+    }
+
+    /// Stops clip playback. No-op on plain Nodes; SpriteNode overrides.
+    @objc func stopAnimation() {
+        // No-op: plain Nodes have no sprite frames.
     }
 
     @objc func destroy() {
