@@ -171,6 +171,13 @@ struct SceneSerializer {
                 dict["modulate"] = [Double(sprite.modulate.x), Double(sprite.modulate.y),
                                     Double(sprite.modulate.z), Double(sprite.modulate.w)]
             }
+            if let textureName = sprite.textureName {
+                dict["textureName"] = textureName
+            }
+        }
+
+        if let tileMap = node as? TileMapNode, let textureName = tileMap.textureName {
+            dict["textureName"] = textureName
         }
 
         // Physics body.

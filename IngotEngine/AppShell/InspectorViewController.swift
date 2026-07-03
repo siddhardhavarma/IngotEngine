@@ -51,6 +51,9 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     /// paint index, or selection). The editor reads `paintState`.
     var onPaintStateChanged: (() -> Void)?
 
+    /// Fired after "Save as Prefab" succeeds, with the prefab name.
+    var onPrefabSaved: ((String) -> Void)?
+
     var selectedNode: Node? {
         didSet { rebuildForm() }
     }
@@ -189,6 +192,9 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             node.isEnabled = value
             self?.onNodeEdited?()
         }
+        buttonRow("Save as Prefab") { [weak self] in
+            self?.promptSavePrefab(for: node)
+        }
 
         section("TRANSFORM")
         floatRow("Position X", get: { node.position.x }, set: { node.position.x = $0 })
@@ -313,6 +319,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             }
 
             let checkbox = addCheckbox(title: "Paint Mode (right-click erases)")
+            // Painting is the primary interaction with a tile map (they
+            // aren't drag-movable in the viewport), so paint mode is ON
+            // whenever a tile map is selected. Untick to disable.
+            checkbox.state = .on
             paintModeCheckbox = checkbox
             toggleHandlers[ObjectIdentifier(checkbox)] = { [weak self] _ in
                 self?.onPaintStateChanged?()
@@ -513,6 +523,28 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
 
     @objc private func buttonClicked(_ sender: NSButton) {
         buttonHandlers[ObjectIdentifier(sender)]?()
+    }
+
+    /// Asks for a prefab name and saves the node's subtree.
+    private func promptSavePrefab(for node: Node) {
+        let alert = NSAlert()
+        alert.messageText = "Save as Prefab"
+        alert.informativeText = "\"\(node.name)\" and its children become a reusable prefab."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let nameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        nameField.stringValue = node.name
+        alert.accessoryView = nameField
+        alert.window.initialFirstResponder = nameField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+
+        if PrefabLibrary.save(node, named: name) {
+            onPrefabSaved?(name)
+        }
     }
 
     private func assignScript(create: Bool) {

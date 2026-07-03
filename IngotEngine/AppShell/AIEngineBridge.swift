@@ -19,6 +19,14 @@ import Foundation
 import Metal
 import simd
 
+/// A provider-side failure (bad key, unknown model, rate limit, …)
+/// with the provider's own message so users see the real cause in the
+/// chat panel instead of silence.
+struct AIProviderError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
 // ---------------------------------------------------------------------------
 // AIEngineBridge
 // ---------------------------------------------------------------------------
@@ -304,6 +312,42 @@ class AIEngineBridge {
 
     // MARK: - Provider Implementations
 
+    /// Sends a request and validates the HTTP status. Non-2xx responses
+    /// throw with the provider's error message extracted from the body
+    /// (all three providers use an "error" envelope), so failures like
+    /// invalid keys or unknown model IDs surface in the chat panel.
+    private func post(_ request: URLRequest) async throws -> Data {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw AIProviderError(message: "Network error: \(error.localizedDescription)")
+        }
+
+        if let http = response as? HTTPURLResponse,
+           !(200...299).contains(http.statusCode) {
+            var message = "HTTP \(http.statusCode)"
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let error = json["error"] as? [String: Any],
+                   let detail = error["message"] as? String {
+                    message += ": \(detail)"
+                } else if let detail = json["message"] as? String {
+                    message += ": \(detail)"
+                }
+            }
+            throw AIProviderError(message: message)
+        }
+
+        return data
+    }
+
+    /// Thrown when a 2xx response doesn't have the expected shape.
+    private func unexpectedFormat(_ data: Data) -> AIProviderError {
+        let snippet = String(data: data.prefix(200), encoding: .utf8) ?? "(binary)"
+        return AIProviderError(message: "Unexpected response format: \(snippet)")
+    }
+
     /// OpenAI Chat Completions API.
     /// Temperature 0.0 for maximum structural consistency.
     private func sendToOpenAI(prompt: String, apiKey: String, model: String) async throws -> String {
@@ -323,13 +367,13 @@ class AIEngineBridge {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let data = try await post(request)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
               let content = message["content"] as? String else {
-            return "[]"
+            throw unexpectedFormat(data)
         }
         return content
     }
@@ -355,12 +399,12 @@ class AIEngineBridge {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let data = try await post(request)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let contentArray = json["content"] as? [[String: Any]],
               let text = contentArray.first?["text"] as? String else {
-            return "[]"
+            throw unexpectedFormat(data)
         }
         return text
     }
@@ -384,14 +428,14 @@ class AIEngineBridge {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let data = try await post(request)
 
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = json["candidates"] as? [[String: Any]],
               let content = candidates.first?["content"] as? [String: Any],
               let parts = content["parts"] as? [[String: Any]],
               let text = parts.first?["text"] as? String else {
-            return "[]"
+            throw unexpectedFormat(data)
         }
         return text
     }
@@ -411,6 +455,12 @@ class AIEngineBridge {
             onLog("Error: Could not decode AI commands as a JSON array.")
             return
         }
+
+        guard !commands.isEmpty else {
+            onLog("The model returned no commands — try rephrasing the request.")
+            return
+        }
+        onLog("Running \(commands.count) command\(commands.count == 1 ? "" : "s")…")
 
         for command in commands {
             let action = command["action"] as? String ?? ""

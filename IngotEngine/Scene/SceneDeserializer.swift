@@ -173,6 +173,14 @@ struct SceneDeserializer {
             if let m = dict["modulate"] as? [Double], m.count == 4 {
                 sprite.modulate = simd_float4(Float(m[0]), Float(m[1]), Float(m[2]), Float(m[3]))
             }
+            if let textureName = dict["textureName"] as? String {
+                sprite.textureName = textureName
+            }
+        }
+
+        if let tileMap = node as? TileMapNode,
+           let textureName = dict["textureName"] as? String {
+            tileMap.textureName = textureName
         }
 
         // Physics body. CollisionNode already made its own trigger body

@@ -123,20 +123,34 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (13 files — the macOS editor)
+### AppShell/ (14 files — the macOS editor)
+
+Editor layout (three columns, organized "what exists → what you see → what it is"):
+```
+┌───────────────┬──────────────────────────┬─────────────────┐
+│ SCENE         │                          │ INSPECTOR       │
+│ HIERARCHY     │        VIEWPORT          │ (per-type)      │
+├───────────────┤──────────────────────────├─────────────────┤
+│ ASSET LIBRARY │ LOGIC: Event Sheet |     │ ✦ AI COPILOT    │
+│ import/assign │        Script Editor     │ (always open)   │
+└───────────────┴──────────────────────────┴─────────────────┘
+Toolbar: Save · Scenes ▾ · ▶ Play · ✦ AI Settings · Export
+```
+
 | File | What it does |
 |------|-------------|
 | `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
+| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… copies png/jpg/wav/mp3 into Assets/, list shows real image thumbnails + prefabs, filter segments (All/Art/Audio/Prefabs). Double-click assigns: texture → selected Sprite/TileMap (records `textureName` for persistence + export), audio → selected AudioNode, prefab → placed in the scene. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
-| `EditorViewController.swift` | NSSplitViewController root. Owns Engine, wires all panels. NSToolbarDelegate for Save/Load/Play/Export buttons. Manages undo (snapshot-based), AI prompt dispatch, play/stop (re-registers physics each play), save/load, runtime scene-loader wiring, tile-paint wiring, export. |
+| `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
 | `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Dynamic instance buffer grows with the scene. Camera shake applied to the view matrix. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase) when the inspector's Paint Mode is on. |
 | `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type, double-click renames in place (undoable). Refreshes after AI commands and inspector edits. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |
-| `InspectorViewController.swift` | Property editor with dynamic per-type sections — the form is rebuilt per selection so only relevant sections exist (no gaps). Every node type is hand-editable: Identity, Transform, Camera (zoom/follow/smoothing), Shape (color well, size), Text (string/font/color), Sprite (modulate tint), Audio, Trigger, Timer, Particles (full emission config + color wells), Tile Map (atlas/solid tiles/paint controls), Physics (add/edit/remove body), Script. Closure-bound rows: adding a property = one line. |
-| `ChatPanelViewController.swift` | AI copilot UI. Dark monospaced history view with color-coded messages. Prompt field fires onPromptSubmitted. |
+| `InspectorViewController.swift` | Property editor with dynamic per-type sections — the form is rebuilt per selection so only relevant sections exist (no gaps). Every node type is hand-editable: Identity (incl. Save as Prefab), Transform, Camera (zoom/follow/smoothing), Shape (color well, size), Text (string/font/color), Sprite (modulate tint), Audio, Trigger, Timer, Particles (full emission config + color wells), Tile Map (atlas/solid tiles/paint controls), Physics (add/edit/remove body), Script. Closure-bound rows: adding a property = one line. |
+| `ChatPanelViewController.swift` | AI copilot panel (right dock, always visible). Adaptive color-coded history, selection-context header ("Selected: Player"), busy spinner while requests run, errors in red. Prompt field fires onPromptSubmitted. |
 | `EventSheetViewController.swift` | Visual scripting surface. Displays behavior rules as When/Do rows with edit (✎) and delete buttons; + Add Rule opens the rule editor. |
 | `RuleEditorViewController.swift` | Sheet for editing one rule inline: event dropdown + parameter field, editable action rows (type dropdown + up to 3 params), add/remove actions, Save builds the Rule. |
-| `AssetBrowserViewController.swift` | NSTableView file browser showing Assets/, Scripts/, Scenes/ contents with type icons, names, and sizes. |
+| `AssetBrowserViewController.swift` | (Superseded by AssetLibraryViewController — no longer wired into the layout; kept for reference.) |
 | `AIEngineBridge.swift` | LLM communication. Builds prompts with full scene context + prefab list, sends to OpenAI/Claude/Gemini, strips markdown, executes 20 JSON command types (createNode, deleteNode, updateProperty, setColor, setText, addPhysicsBody, setVelocity, setGravity, configureParticles, configureTileMap, paintTiles, setCameraFollow, configureTimer, savePrefab, spawnPrefab, addToGroup, addRule, attachScript, generateTexture, generateSound). |
 | `ProjectExporter.swift` | Generates .swiftpm packages for iPhone/iPad/Apple TV. Creates Package.swift (`.iOSApplication` app product on iPhone/iPad — real installable app with bundle ID/orientations), GameApp.swift (SwiftUI), GameViewController.swift (Metal+UIKit, mirrors the editor renderer incl. tile maps/particles/z-order, design-resolution scaling, runtime scene loader), TouchControls.swift (virtual joystick + action button), ControllerInput.swift (GameController → InputManager, incl. Siri Remote). Copies assets/scripts/prefabs/ALL scenes/shaders, and auto-copies engine sources when `IngotEngineSourcePath` is set. |
 
@@ -170,8 +184,11 @@ All quads share the same 6-vertex geometry. The scene (sprites, tiles, particles
 ### Signals Everywhere (Godot-style)
 `TimerNode` timeout → EventBus signal → `onSignal` rule fires actions. `CollisionNode` overlap-enter → `triggerSignal`. Collisions → `"Collision"` + `"Collision:<NodeName>"`. Any rule can `emitSignal` for others to hear. This is the decoupling backbone for AI-generated game logic.
 
+### Asset Workflow (import → assign → persist → export)
+Import… in the Asset Library copies files into Assets/. Double-clicking a texture assigns it to the selected Sprite/TileMap and records `textureName` on the node; the serializer persists it, the editor reloads it from Assets/ on scene load (cached per file), and exported games resolve the same name from their bundled resources. Audio files assign to AudioNodes the same way.
+
 ### Prefab Workflow
-Save any subtree as a prefab (`PrefabLibrary.save`), then instantiate it from the AI (`spawnPrefab`), from rules (the `spawnPrefab` action — e.g. a Timer signal spawning enemy waves), or from JS (`node.spawn("Enemy", x, y)`). Runtime spawns auto-register their physics bodies through `PhysicsWorld.current`.
+Save any subtree as a prefab ("Save as Prefab" in the Inspector, or the AI's `savePrefab`), then instantiate it by double-clicking it in the Asset Library, from the AI (`spawnPrefab`), from rules (the `spawnPrefab` action — e.g. a Timer signal spawning enemy waves), or from JS (`node.spawn("Enemy", x, y)`). Runtime spawns auto-register their physics bodies through `PhysicsWorld.current`.
 
 ### Camera System
 CameraNode's globalTransform is inverted to produce the view matrix:
@@ -228,7 +245,7 @@ engine.physicsWorld.gravity = simd_float2(0, 0)     // top-down (default)
 ## Known Gaps / TODO
 1. No `.xcodeproj` generation — export uses `.swiftpm` only (the iPhone/iPad package is a runnable `.iOSApplication` app, though)
 2. No file-watching for EXTERNAL script/asset edits (the built-in Script Editor does hot-reload on save, but changes made in other apps aren't noticed)
-3. Texture references use node names, not proper asset IDs
+3. AI-generated textures (generateTexture) don't set `textureName` yet — they display immediately but don't persist through save/load like Asset Library assignments do
 4. Dynamic-vs-dynamic collisions detect but don't resolve
 5. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
 6. No headless unit-test suite / CI yet (the engine core is GPU-free by design, so this is cheap to add)
