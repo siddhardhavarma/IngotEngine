@@ -20,6 +20,7 @@ enum TestSupport {
             .appendingPathComponent("IngotEngineTests-\(UUID().uuidString)")
         ProjectManager.shared.createOrOpenProject(at: dir)
         AnimationLibrary.invalidate()
+        TileSetLibrary.invalidate()
         InputManager.shared.clearAllActions()
         return dir
     }

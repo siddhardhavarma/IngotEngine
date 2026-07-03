@@ -54,6 +54,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     /// Fired after "Save as Prefab" succeeds, with the prefab name.
     var onPrefabSaved: ((String) -> Void)?
 
+    /// Fired after a tile set is applied to the selected tile map, so
+    /// the editor can reload its atlas texture from Assets/.
+    var onTileSetApplied: ((TileMapNode) -> Void)?
+
     /// Fired when the user wants to edit the node's script — the
     /// editor opens it in the Script Editor tab.
     var onEditScript: ((String) -> Void)?
@@ -331,6 +335,24 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
 
         if let tileMap = node as? TileMapNode {
             section("TILE MAP")
+            // One click configures atlas + grid + tile size + solids
+            // from a set authored in the Tile Sets window.
+            popupRow("Tile Set",
+                     options: ["(none)"] + TileSetLibrary.list(),
+                     get: { tileMap.tileSetName ?? "(none)" },
+                     set: { [weak self] value in
+                         guard value != "(none)",
+                               let tileSet = TileSetLibrary.tileSet(named: value) else {
+                             tileMap.tileSetName = nil
+                             return
+                         }
+                         tileMap.apply(tileSet)
+                         self?.onTileSetApplied?(tileMap)
+                         // Rebuild so the fields and palette reflect the
+                         // applied set (async — the rebuild destroys the
+                         // popup that sent this action).
+                         DispatchQueue.main.async { self?.rebuildForm() }
+                     })
             floatRow("Tile W", format: "%.0f",
                      get: { tileMap.tileWidth },
                      set: { tileMap.tileWidth = max($0, 1); tileMap.rebuildCollision() })
@@ -361,6 +383,8 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             toggleHandlers[ObjectIdentifier(checkbox)] = { [weak self] _ in
                 self?.onPaintStateChanged?()
             }
+
+            addTilePalette(for: tileMap)
         }
 
         section("PHYSICS")
@@ -401,6 +425,53 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             guard !name.isEmpty else { return }
             self.onEditScript?(name.hasSuffix(".js") ? name : name + ".js")
         }
+    }
+
+    /// A clickable atlas preview below the paint controls: click a
+    /// tile to paint with it (no more typing atlas indices). Solid
+    /// tiles show their red overlay for orientation.
+    private func addTilePalette(for tileMap: TileMapNode) {
+        guard let textureName = tileMap.textureName,
+              let assetsDir = ProjectManager.shared.assetsURL,
+              let image = NSImage(contentsOf: assetsDir.appendingPathComponent(textureName)) else {
+            let hint = NSTextField(wrappingLabelWithString:
+                "No atlas image — apply a Tile Set or double-click a texture in the Asset Library to get a clickable palette.")
+            hint.font = NSFont.systemFont(ofSize: 10)
+            hint.textColor = .tertiaryLabelColor
+            hint.frame = NSRect(x: margin, y: yCursor,
+                                width: formWidth - margin * 2, height: 42)
+            contentView.addSubview(hint)
+            yCursor += 48
+            return
+        }
+
+        let label = NSTextField(labelWithString: "Palette — click a tile to paint with it")
+        label.font = NSFont.systemFont(ofSize: 10)
+        label.textColor = .secondaryLabelColor
+        label.frame = NSRect(x: margin, y: yCursor, width: 230, height: 14)
+        contentView.addSubview(label)
+        yCursor += 18
+
+        let width = formWidth - margin * 2
+        let columns = max(tileMap.atlasColumns, 1)
+        let rows = max(tileMap.atlasRows, 1)
+        let height = min(width * CGFloat(rows) / CGFloat(columns), 300)
+
+        let palette = TileAtlasView()
+        palette.image = image
+        palette.columns = columns
+        palette.rows = rows
+        palette.solidTiles = tileMap.solidTiles
+        palette.selectedIndex = Int(paintIndexField?.stringValue ?? "0") ?? 0
+        palette.wantsLayer = true
+        palette.layer?.cornerRadius = 4
+        palette.onTilePicked = { [weak self] index in
+            self?.paintIndexField?.stringValue = String(index)
+            self?.onPaintStateChanged?()
+        }
+        palette.frame = NSRect(x: margin, y: yCursor, width: width, height: height)
+        contentView.addSubview(palette)
+        yCursor += height + 10
     }
 
     // MARK: - Row builders (frame-based, top-to-bottom)

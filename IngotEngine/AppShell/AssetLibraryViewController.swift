@@ -29,10 +29,10 @@ class AssetLibraryViewController: NSViewController,
 
     /// One row in the library.
     private struct AssetItem {
-        enum Kind { case texture, audio, script, prefab, character, animation }
+        enum Kind { case texture, audio, script, prefab, character, animation, tileset }
         let kind: Kind
         let name: String
-        let url: URL?          // nil for prefabs/animations (load by name)
+        let url: URL?          // nil for prefabs/animations/tile sets (load by name)
         let subtitle: String
     }
 
@@ -57,6 +57,9 @@ class AssetLibraryViewController: NSViewController,
     /// Double-click on a character: attach it to the selected sprite.
     var onAttachCharacter: ((String) -> Void)?
 
+    /// Double-click on a tile set: apply it to the selected tile map.
+    var onApplyTileSet: ((String) -> Void)?
+
     /// Status/log line (routed to the AI chat history).
     var onLog: ((String) -> Void)?
 
@@ -64,7 +67,7 @@ class AssetLibraryViewController: NSViewController,
     private var filterPopup: NSPopUpButton!
     private var items: [AssetItem] = []
 
-    private let filterTitles = ["All", "Art", "Audio", "Scripts", "Prefabs", "Animations"]
+    private let filterTitles = ["All", "Art", "Audio", "Scripts", "Prefabs", "Animations", "Tile Sets"]
 
     // MARK: - Layout
 
@@ -214,6 +217,14 @@ class AssetLibraryViewController: NSViewController,
             }
         }
 
+        if filter == 0 || filter == 6 {
+            for tileSet in TileSetLibrary.list() {
+                items.append(AssetItem(kind: .tileset, name: tileSet,
+                                       url: nil,
+                                       subtitle: "Tile set — double-click applies to selected Tile Map"))
+            }
+        }
+
         tableView.reloadData()
     }
 
@@ -308,6 +319,8 @@ class AssetLibraryViewController: NSViewController,
             onAttachCharacter?(item.name)
         case .animation:
             onOpenAnimations?()
+        case .tileset:
+            onApplyTileSet?(item.name)
         }
     }
 
@@ -354,6 +367,9 @@ class AssetLibraryViewController: NSViewController,
         case .animation:
             thumb.image = NSImage(systemSymbolName: "figure.walk.motion", accessibilityDescription: nil)
             thumb.contentTintColor = .systemGreen
+        case .tileset:
+            thumb.image = NSImage(systemSymbolName: "square.grid.3x3", accessibilityDescription: nil)
+            thumb.contentTintColor = .systemIndigo
         }
 
         let nameLabel = NSTextField(labelWithString: item.name)

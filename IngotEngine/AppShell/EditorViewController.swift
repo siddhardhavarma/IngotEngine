@@ -30,6 +30,7 @@ private extension NSToolbarItem.Identifier {
     static let save            = NSToolbarItem.Identifier("Save")
     static let scenes          = NSToolbarItem.Identifier("Scenes")
     static let animations      = NSToolbarItem.Identifier("Animations")
+    static let tileSets        = NSToolbarItem.Identifier("TileSets")
     static let projectSettings = NSToolbarItem.Identifier("ProjectSettings")
     static let export          = NSToolbarItem.Identifier("Export")
     static let aiSettings      = NSToolbarItem.Identifier("AISettings")
@@ -65,6 +66,7 @@ class EditorViewController: NSSplitViewController {
 
     /// The Animation Editor window (created lazily, reused).
     private var animationWindow: NSWindow?
+    private var tileSetWindow: NSWindow?
 
     /// Rolling copilot conversation memory ("User: …" / "Executed: …"),
     /// sent with every prompt so follow-ups have context.
@@ -209,6 +211,11 @@ class EditorViewController: NSSplitViewController {
             self?.eventSheet.targetNode = node
             self?.chatPanel.setContext(node.map { "Selected: \($0.name)" } ?? "No selection — commands target the whole scene")
         }
+        // The viewport draws a selection outline around whatever the
+        // inspector currently targets (single source of truth).
+        viewport.selectedNodeProvider = { [weak self] in
+            self?.inspector.selectedNode
+        }
         viewport.onNodeDragMoved = { [weak self] in
             self?.inspector.refreshUI()
         }
@@ -244,6 +251,19 @@ class EditorViewController: NSSplitViewController {
         }
         assetLibrary.onAttachCharacter = { [weak self] character in
             self?.attachCharacter(character)
+        }
+        assetLibrary.onApplyTileSet = { [weak self] name in
+            self?.applyTileSet(named: name)
+        }
+
+        inspector.onTileSetApplied = { [weak self] tileMap in
+            guard let self else { return }
+            if let textureName = tileMap.textureName,
+               let texture = self.loadProjectTexture(named: textureName) {
+                tileMap.texture = texture
+            }
+            self.chatPanel.appendToHistory(
+                "Applied tile set \"\(tileMap.tileSetName ?? "?")\" to \(tileMap.name).")
         }
 
         inspector.onEditScript = { [weak self] name in
@@ -444,6 +464,26 @@ class EditorViewController: NSSplitViewController {
         }
         inspector.refreshUI()
         chatPanel.appendToHistory("Character \"\(character)\" → \"\(sprite.name)\". Scripts can now play its clips by name.")
+    }
+
+    /// Applies a saved tile set to the selected TileMapNode: atlas,
+    /// grid, tile size, and solid tiles in one double-click.
+    private func applyTileSet(named name: String) {
+        guard let tileMap = inspector.selectedNode as? TileMapNode else {
+            chatPanel.appendToHistory("Select a Tile Map first, then double-click the tile set.")
+            return
+        }
+        guard let tileSet = TileSetLibrary.tileSet(named: name) else { return }
+
+        registerUndoSnapshot()
+        tileMap.apply(tileSet)
+        if let textureName = tileMap.textureName,
+           let texture = loadProjectTexture(named: textureName) {
+            tileMap.texture = texture
+        }
+        // Reassigning the selection rebuilds the form (fields + palette).
+        inspector.selectedNode = tileMap
+        chatPanel.appendToHistory("Applied tile set \"\(name)\" to \(tileMap.name) — paint away.")
     }
 
     private func placePrefab(named name: String) {
@@ -773,11 +813,12 @@ class EditorViewController: NSSplitViewController {
 extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.playStop, .flexibleSpace, .save, .scenes, .animations, .projectSettings, .export, .aiSettings]
+        [.playStop, .flexibleSpace, .save, .scenes, .animations, .tileSets,
+         .projectSettings, .export, .aiSettings]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace,
+        [.save, .scenes, .animations, .tileSets, .flexibleSpace, .playStop, .flexibleSpace,
          .projectSettings, .aiSettings, .export]
     }
 
@@ -822,6 +863,15 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
             item.toolTip = "Create sprite animations (playable from scripts and rules)"
             item.target = self
             item.action = #selector(toolbarAnimations)
+            return item
+
+        case .tileSets:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "square.grid.3x3", accessibilityDescription: "Tile Sets")
+            item.label = "Tiles"
+            item.toolTip = "Create tile sets (atlas + solid tiles) for tile maps"
+            item.target = self
+            item.action = #selector(toolbarTileSets)
             return item
 
         case .export:
@@ -924,6 +974,41 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
         window.makeKeyAndOrderFront(nil)
 
         animationWindow = window
+    }
+
+    /// Opens (or brings forward) the Tile Set editor window.
+    @objc private func toolbarTileSets() {
+        if let window = tileSetWindow {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let editor = TileSetEditorViewController()
+        editor.onLibraryChanged = { [weak self] in
+            guard let self else { return }
+            self.assetLibrary.refresh()
+            // Re-assigning the selection rebuilds the form, so the
+            // Tile Set popup picks up newly saved sets.
+            self.inspector.selectedNode = self.inspector.selectedNode
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 500),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Tile Sets — \(ProjectManager.shared.projectFile.gameName)"
+        window.contentViewController = editor
+        // ARC owns the window (see AppDelegate for the over-release story).
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName("IngotTileSetsWindow")
+        if !window.setFrameUsingName("IngotTileSetsWindow") {
+            window.center()
+        }
+        window.makeKeyAndOrderFront(nil)
+
+        tileSetWindow = window
     }
 
     @objc private func toolbarProjectSettings() {

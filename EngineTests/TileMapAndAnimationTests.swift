@@ -60,6 +60,47 @@ final class TileMapAndAnimationTests: XCTestCase {
         XCTAssertEqual(map.collisionBodies.count, 0)
     }
 
+    // MARK: - Tile sets
+
+    func testTileSetLibraryRoundTripAndApply() {
+        var tileSet = TileSetDefinition(name: "Terrain")
+        tileSet.textureName = "tiles.png"
+        tileSet.atlasColumns = 16
+        tileSet.atlasRows = 16
+        tileSet.tileWidth = 32
+        tileSet.tileHeight = 32
+        tileSet.solidTiles = [0, 1, 5]
+        XCTAssertTrue(TileSetLibrary.save(tileSet))
+
+        // Force a re-read from disk to prove persistence.
+        TileSetLibrary.invalidate()
+        XCTAssertEqual(TileSetLibrary.list(), ["Terrain"])
+        XCTAssertEqual(TileSetLibrary.tileSet(named: "Terrain"), tileSet)
+
+        // Applying configures the map in one step — already-painted
+        // tiles regenerate colliders against the set's solid list.
+        let map = TileMapNode()
+        map.name = "Ground"
+        map.setTile(x: 0, y: 0, tileIndex: 5)
+        map.setTile(x: 1, y: 0, tileIndex: 9)   // not solid in the set
+        map.apply(tileSet)
+
+        XCTAssertEqual(map.textureName, "tiles.png")
+        XCTAssertEqual(map.atlasColumns, 16)
+        XCTAssertEqual(map.tileWidth, 32)
+        XCTAssertEqual(map.tileSetName, "Terrain")
+        XCTAssertEqual(map.collisionBodies.count, 1)
+
+        // The provenance survives the scene round trip.
+        let scene = Scene()
+        scene.rootNode.addChild(map)
+        let json = SceneSerializer.serialize(scene)
+        let restored = SceneDeserializer.deserialize(jsonString: json)?
+            .findChild(named: "Ground") as? TileMapNode
+        XCTAssertEqual(restored?.tileSetName, "Terrain")
+        XCTAssertEqual(restored?.solidTiles, [0, 1, 5])
+    }
+
     // MARK: - Animation library
 
     func testAnimationLibrarySaveLoadRoundTrip() {

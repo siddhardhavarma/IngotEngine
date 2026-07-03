@@ -36,6 +36,11 @@ class TileMapNode: Node {
     /// The asset file the atlas came from (see SpriteNode.textureName).
     var textureName: String?
 
+    /// The tile set this map was configured from (provenance only —
+    /// applying a set copies its values onto the node, so scenes stay
+    /// self-contained).
+    var tileSetName: String?
+
     /// How the atlas texture is subdivided into tile cells.
     var atlasColumns: Int = 4 { didSet { atlasColumns = max(atlasColumns, 1) } }
     var atlasRows: Int = 4 { didSet { atlasRows = max(atlasRows, 1) } }
@@ -60,6 +65,22 @@ class TileMapNode: Node {
     override init() {
         super.init()
         name = "TileMap"
+    }
+
+    // MARK: - Tile sets
+
+    /// Copies a tile set's atlas, grid, tile size, and solid indices
+    /// onto this map (existing painted tiles regenerate colliders
+    /// against the new solid list). Texture loading stays the shell's
+    /// job — it resolves the recorded textureName from Assets/.
+    func apply(_ tileSet: TileSetDefinition) {
+        if let texture = tileSet.textureName { textureName = texture }
+        atlasColumns = tileSet.atlasColumns
+        atlasRows = tileSet.atlasRows
+        tileWidth = tileSet.tileWidth
+        tileHeight = tileSet.tileHeight
+        solidTiles = Set(tileSet.solidTiles)   // triggers rebuildCollision
+        tileSetName = tileSet.name
     }
 
     // MARK: - Tile editing

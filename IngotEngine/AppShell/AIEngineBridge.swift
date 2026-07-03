@@ -52,6 +52,8 @@ class AIEngineBridge {
         let sceneList = scenes.isEmpty ? "(none saved yet)" : scenes.joined(separator: ", ")
         let animations = AnimationLibrary.list()
         let animationList = animations.isEmpty ? "(none defined yet)" : animations.joined(separator: ", ")
+        let tileSets = TileSetLibrary.list()
+        let tileSetList = tileSets.isEmpty ? "(none defined yet)" : tileSets.joined(separator: ", ")
 
         return """
         [System Prompt]
@@ -64,6 +66,7 @@ class AIEngineBridge {
         Saved prefabs: \(prefabList)
         Saved scenes: \(sceneList)
         Animation clips: \(animationList)
+        Tile sets: \(tileSetList)
 
         You must respond ONLY with a JSON array of commands. Each command is an object with an "action" key.
 
@@ -98,7 +101,7 @@ class AIEngineBridge {
            Required: "targetName". Optional: "amount", "lifetime", "oneShot", "direction" (degrees, 90=up), "spread", "initialVelocity", "gravityX", "gravityY", "startScale", "endScale", "startColor" [r,g,b,a], "endColor" [r,g,b,a], "emitting"
 
         10. "configureTileMap" — set up a TileMapNode's atlas and collision.
-            Required: "targetName". Optional: "tileWidth", "tileHeight", "atlasColumns", "atlasRows", "solidTiles" (array of tile indices that block movement)
+            Required: "targetName". Optional: "tileSet" (name of a saved tile set — applies its atlas, grid, tile size, and solid tiles in one go; PREFER this when one exists), "tileWidth", "tileHeight", "atlasColumns", "atlasRows", "solidTiles" (array of tile indices that block movement). Explicit fields override the tile set's values.
 
         11. "paintTiles" — place tiles on a TileMapNode.
             Required: "targetName", and either "tiles" (array of [x, y, tileIndex] triples; tileIndex -1 erases) or a fill rect: "x", "y", "width", "height", "tileIndex"
@@ -244,6 +247,11 @@ class AIEngineBridge {
     Physics notes: bodies with velocity are integrated by the engine;
     world gravity applies unless gravityScale is 0. For a jump: check
     isActionJustPressed then node.setVelocity(currentX, 600).
+
+    Scripts attach to ANY node type — including the camera. A camera
+    script can pan (node.x/node.y) or zoom (node.jsZoom) for cutscenes
+    and manual scrolling; if the camera has a follow target set, the
+    follow runs after the script and wins on position.
     """
 
     /// Generates or rewrites a lifecycle script with full engine
@@ -831,6 +839,19 @@ class AIEngineBridge {
               let tileMap = node as? TileMapNode else {
             onLog("Error: configureTileMap requires targetName (a TileMapNode).")
             return
+        }
+
+        // A named tile set applies first; explicit fields override it.
+        if let setName = cmd["tileSet"] as? String {
+            if let tileSet = TileSetLibrary.tileSet(named: setName) {
+                tileMap.apply(tileSet)
+                if let textureName = tileMap.textureName,
+                   let texture = SpriteNode.textureResolver?(textureName) {
+                    tileMap.texture = texture
+                }
+            } else {
+                onLog("Warning: tile set \"\(setName)\" not found.")
+            }
         }
 
         if let v = float(cmd, "tileWidth") { tileMap.tileWidth = v }

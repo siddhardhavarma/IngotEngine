@@ -60,7 +60,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 
 ## Directory Details
 
-### Core/ (11 files)
+### Core/ (12 files)
 | File | What it does |
 |------|-------------|
 | `Engine.swift` | The orchestrator. Owns GameClock, PhysicsWorld, AudioManager, MusicPlayer, TweenManager. `step()` runs the frame loop and clears per-frame input edges. `isPlaying` toggles design/play mode. Publishes `PhysicsWorld.current` + `Engine.current`. Scene flow: `sceneLoader` (injected by the shell) + `requestScene(named:)` swap scenes safely at end-of-frame and emit "SceneChanged". |
@@ -75,6 +75,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `AnimationLibrary.swift` | Character-based sprite animations (Godot SpriteFrames-ish): `AnimationClip` (character, own sprite-sheet `textureName`, grid, frame range, fps, loop) stored per project in animations.json, keyed by "Character/clip". Playing a clip SWAPS the sprite's texture to the clip's sheet (via `SpriteNode.textureResolver`, injected by the shell). Played via `node.playAnimation("run_left")` / `("Player/run_left")` (JS), the playAnimation rule action, AI commands, or a sprite's auto-playing `defaultAnimationName`. |
 | `Node+JSExport.swift` | JSExport bridge: x, y, rotationDegrees, scaleX/Y, zIndexJS, visible, name, jsZoom, setFrame(), getChild(), emitSignal(), setVelocity(), spawn(prefab,x,y), destroy(). |
 | `AIConfiguration.swift` | `AIProvider` enum + `AISettings` struct: provider, per-provider model IDs (user-editable), API keys. `load()`/`save()` persist preferences to UserDefaults and keys to the Keychain. |
+| `TileSetLibrary.swift` | Named, reusable tile sets (Godot TileSet-ish): `TileSetDefinition` (atlas textureName, atlas grid, tile size, solid indices) stored per project in tilesets.json. `TileMapNode.apply(tileSet)` copies the values onto the node (scenes stay self-contained — exports never need tilesets.json) and records `tileSetName` as provenance. |
 
 ### Logic/ (4 files)
 | File | What it does |
@@ -96,7 +97,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `CollisionNode.swift` | Invisible trigger zone (Godot Area2D). Its PhysicsBody is `isTrigger` — PhysicsWorld calls `fireTrigger()` on overlap ENTER, emitting `triggerSignal`. |
 | `TimerNode.swift` | Godot Timer: waitTime, oneShot, autostart; emits `timeoutSignal` on the EventBus on timeout. |
 | `ParticleNode.swift` | Godot CPUParticles2D: CPU-simulated world-space particles with direction/spread/velocity/gravity, scale + color over lifetime, one-shot mode. Rendered as instanced quads with a shared soft-dot texture. |
-| `TileMapNode.swift` | Godot TileMap: sparse tile grid over an atlas texture. `setTile`/`fillRect`, `solidTiles` generate static colliders (one PhysicsBody per solid tile via body `offset`). A whole map batches into one draw call. |
+| `TileMapNode.swift` | Godot TileMap: sparse tile grid over an atlas texture. `setTile`/`fillRect`, `solidTiles` generate static colliders (one PhysicsBody per solid tile via body `offset`). `apply(tileSet)` copies a saved TileSetDefinition onto the node (records `tileSetName`, serialized). A whole map batches into one draw call. |
 | `Prefab.swift` | Godot PackedScene: `PrefabLibrary.save/instantiate/list` (JSON files in Prefabs/), plus `Node.duplicate()`. Spawnable at runtime from rules, JS, and AI commands. |
 | `Scene.swift` | Owns rootNode tree + activeCamera + `gravity` (world gravity, saved per scene, pushed into PhysicsWorld when the scene becomes current). `findNode(named:)`, `findNodes(inGroup:)`. Registers node + tile-map physics bodies. |
 | `DemoScene.swift` | (No longer auto-loaded — new projects start blank. Kept as a reference scene builder; excluded from exports.) |
@@ -124,7 +125,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (15 files — the macOS editor)
+### AppShell/ (16 files — the macOS editor)
 
 Editor layout (three columns, organized "what exists → what you see → what it is"):
 ```
@@ -135,7 +136,7 @@ Editor layout (three columns, organized "what exists → what you see → what i
 │ ASSET LIBRARY │ LOGIC: Event Sheet |     │ ✦ AI COPILOT    │
 │ import/assign │        Script Editor     │ (always open)   │
 └───────────────┴──────────────────────────┴─────────────────┘
-Toolbar: Save · Scenes ▾ · Animations · ▶ Play · Project · ✦ AI Settings · Export
+Toolbar: Save · Scenes ▾ · Animations · Tiles · ▶ Play · Project · ✦ AI Settings · Export
 ```
 
 State model (Godot-style — manual Save is never *required*):
@@ -146,15 +147,16 @@ State model (Godot-style — manual Save is never *required*):
 | File | What it does |
 |------|-------------|
 | `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
-| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… accepts files AND folders (recursed, flattened) and copies png/jpg/wav/mp3 into Assets/; list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window. |
+| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… accepts files AND folders (recursed, flattened) and copies png/jpg/wav/mp3 into Assets/; list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations/Tile Sets). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window, tile set → applied to the selected TileMap. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
 | `AnimationEditorViewController.swift` | The Animations window (toolbar button), character-based: character popup + New Character…, the selected character's clips (+/−), per-clip fields incl. its OWN sprite sheet, and a live preview playing from that sheet. Saves to animations.json. |
+| `TileSetEditorViewController.swift` | The Tile Sets window (Tiles toolbar button): saved sets list (+/−), atlas image popup, tile size + atlas grid fields, and a clickable atlas preview — click cells to toggle SOLID. Also home of `TileAtlasView`, reused by the Inspector's paint palette. Saves to tilesets.json. |
 | `ProjectSettingsViewController.swift` | Project sheet (gear toolbar button): game name, design resolution, entry scene picker — writes project.json. |
-| `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
-| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Design-mode editor camera: scroll pans, pinch zooms, Cmd+0 resets to the game camera (Play mode always uses the game camera + shake). Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase). |
+| `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Animations, Tiles, Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
+| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Design-mode editor camera: scroll pans, pinch zooms, Cmd+0 resets to the game camera (Play mode always uses the game camera + shake). Design-mode overlay (hidden during Play): zoom-adaptive grid + world axes, camera gizmo showing the design-resolution view frame with a draggable handle, trigger-zone gizmos, selection outline, and a HUD bar (Grid/Snap toggles + grid size persisted in UserDefaults, zoom %, Reset View, live world coordinates). Picking hits sprites first, then camera handles and trigger zones; dragging snaps to the grid when Snap is on. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase). |
 | `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type, double-click renames in place (undoable). Refreshes after AI commands and inspector edits. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |
-| `InspectorViewController.swift` | Property editor with dynamic per-type sections — the form is rebuilt per selection so only relevant sections exist (no gaps). Every node type is hand-editable: Identity (incl. Save as Prefab), Transform, Camera (zoom/follow/smoothing), Shape (color well, size), Text (string/font/color), Sprite (modulate tint), Audio, Trigger, Timer, Particles (full emission config + color wells), Tile Map (atlas/solid tiles/paint controls), Physics (add/edit/remove body), Script. Closure-bound rows: adding a property = one line. |
+| `InspectorViewController.swift` | Property editor with dynamic per-type sections — the form is rebuilt per selection so only relevant sections exist (no gaps). Every node type is hand-editable: Identity (incl. Save as Prefab), Transform, Camera (zoom/follow/smoothing), Shape (color well, size), Text (string/font/color), Sprite (modulate tint), Audio, Trigger, Timer, Particles (full emission config + color wells), Tile Map (Tile Set popup applies a saved set, atlas/solid tiles/paint controls, and a clickable atlas PALETTE — click a tile to paint with it), Physics (add/edit/remove body), Script. Closure-bound rows: adding a property = one line. |
 | `ChatPanelViewController.swift` | AI copilot panel (right dock, always visible). Adaptive color-coded history, selection-context header ("Selected: Player"), busy spinner while requests run, errors in red. Prompt field fires onPromptSubmitted. |
 | `EventSheetViewController.swift` | Visual scripting surface. Displays behavior rules as When/Do rows with edit (✎) and delete buttons; + Add Rule opens the rule editor. |
 | `RuleEditorViewController.swift` | Sheet for editing one rule inline: event dropdown + parameter field, editable action rows (type dropdown + up to 3 params), add/remove actions, Save builds the Rule. |
@@ -186,6 +188,7 @@ var Script = {
 The JS file is parsed ONCE. Each frame calls the compiled `update` function.
 Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `character` (get/set), `currentAnimation`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
 A sprite with a `character` attached resolves `playAnimation("run_left")` within that character's clips (and swaps to the clip's own sheet); `playAnimation` is a no-op when the clip is already playing, so driving animations from `update()` every frame is the idiomatic pattern.
+Scripts attach to ANY node type — including cameras (select the camera via its viewport gizmo or the hierarchy, then use the Inspector's SCRIPT section). A camera script pans with `node.x/node.y` and zooms with `node.jsZoom`; if a follow target is set, the follow logic runs after the script and wins on position.
 
 ### Character Attachment (sprite ↔ animation set)
 `SpriteNode.characterName` binds a sprite to a character's clip set: attach via the Inspector's Character dropdown, double-clicking the character in the Asset Library (Animations filter), or the AI's `setCharacter`. Attachment scopes script lookups to that character and auto-plays its "idle" clip on scene start (when one exists and no default is set). Serialized with the scene.
@@ -204,6 +207,9 @@ All quads share the same 6-vertex geometry. The scene (sprites, tiles, particles
 
 ### Asset Workflow (import → assign → persist → export)
 Import… in the Asset Library copies files into Assets/. Double-clicking a texture assigns it to the selected Sprite/TileMap and records `textureName` on the node; the serializer persists it, the editor reloads it from Assets/ on scene load (cached per file), and exported games resolve the same name from their bundled resources. Audio files assign to AudioNodes the same way.
+
+### Tile Set Workflow (atlas → tile set → paint)
+In the Tiles window: pick the atlas image, set the grid (e.g. 16×16) and tile size, then CLICK cells in the preview to mark them solid — save as a named set ("Terrain"). Apply it to any TileMapNode via the Inspector's Tile Set popup, double-click in the Asset Library, or the AI (`configureTileMap` with `"tileSet": "Terrain"`). Applying copies atlas + grid + tile size + solids onto the node in one step; then paint using the Inspector's clickable palette (the selected tile gets a yellow border, solids show red). Sets live in tilesets.json; scenes stay self-contained so exports need nothing extra.
 
 ### Prefab Workflow
 Save any subtree as a prefab ("Save as Prefab" in the Inspector, or the AI's `savePrefab`), then instantiate it by double-clicking it in the Asset Library, from the AI (`spawnPrefab`), from rules (the `spawnPrefab` action — e.g. a Timer signal spawning enemy waves), or from JS (`node.spawn("Enemy", x, y)`). Runtime spawns auto-register their physics bodies through `PhysicsWorld.current`.
@@ -274,5 +280,5 @@ once the scene is saved.
 2. No file-watching for EXTERNAL script/asset edits (the built-in Script Editor does hot-reload on save, but changes made in other apps aren't noticed)
 3. Dynamic-vs-dynamic collisions detect but don't resolve
 4. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
-5. Tile paint mode has no atlas-preview palette — the paint tile is chosen by index
+5. ~~Tile paint mode has no atlas-preview palette~~ Fixed: the Inspector shows a clickable atlas palette, and the Tile Sets window marks solid tiles visually
 6. Exported app icon uses the platform default (set one in Xcode after export)
