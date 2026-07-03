@@ -24,6 +24,27 @@ final class SerializationTests: XCTestCase {
         return SceneDeserializer.deserialize(jsonString: json)
     }
 
+    func testWorldGravityRoundTripAndEngineApplication() {
+        let scene = Scene()
+        scene.gravity = simd_float2(0, -980)
+        let json = SceneSerializer.serialize(scene)
+
+        // Gravity survives the file round trip…
+        let restored = Scene()
+        restored.rootNode = SceneDeserializer.deserialize(jsonString: json)!
+        SceneDeserializer.restoreWorldSettings(scene: restored, fromJSON: json)
+        XCTAssertEqual(restored.gravity.y, -980)
+
+        // …and reaches the physics world when the scene becomes current.
+        let engine = Engine()
+        engine.currentScene = restored
+        XCTAssertEqual(engine.physicsWorld.gravity.y, -980)
+
+        // Swapping to a default scene resets gravity to zero.
+        engine.currentScene = Scene()
+        XCTAssertEqual(engine.physicsWorld.gravity.y, 0)
+    }
+
     func testTransformAndIdentityRoundTrip() {
         let scene = Scene()
         let node = Node()

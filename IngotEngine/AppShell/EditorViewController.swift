@@ -329,6 +329,7 @@ class EditorViewController: NSSplitViewController {
             scene.rootNode = result.rootNode
             self.assignProjectTextures(to: result.rootNode)
             SceneDeserializer.restoreActiveCamera(scene: scene, fromJSON: result.json)
+            SceneDeserializer.restoreWorldSettings(scene: scene, fromJSON: result.json)
             return scene
         }
         engine.onSceneChanged = { [weak self] scene in
@@ -571,6 +572,7 @@ class EditorViewController: NSSplitViewController {
         scene.rootNode = result.rootNode
         assignProjectTextures(to: result.rootNode)
         SceneDeserializer.restoreActiveCamera(scene: scene, fromJSON: result.json)
+        SceneDeserializer.restoreWorldSettings(scene: scene, fromJSON: result.json)
 
         engine.currentScene = scene
         currentSceneName = name
@@ -691,7 +693,9 @@ class EditorViewController: NSSplitViewController {
             // for anything assigned from the Asset Library.
             target.assignProjectTextures(to: restoredRoot)
             scene.rootNode = restoredRoot
+            SceneDeserializer.restoreWorldSettings(scene: scene, fromJSON: snapshotJSON)
             target.engine.physicsWorld.removeAllBodies()
+            scene.applyWorldSettings(to: target.engine.physicsWorld)
             scene.registerPhysicsBodies(with: target.engine.physicsWorld)
             target.sidebar.rootNode = restoredRoot
             if let name = selectedName {

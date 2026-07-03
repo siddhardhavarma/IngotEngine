@@ -92,7 +92,7 @@ class AIEngineBridge {
 
         7. "setVelocity" — set a node's physics velocity in px/s. Required: "targetName", "x", "y"
 
-        8. "setGravity" — set world gravity in px/s². Required: "x", "y" (platformer: x=0, y=-980; top-down: 0,0)
+        8. "setGravity" — set world gravity in px/s². Required: "x", "y" (platformer: x=0, y=-980; top-down: 0,0). Saved with the scene.
 
         9. "configureParticles" — set up a ParticleNode.
            Required: "targetName". Optional: "amount", "lifetime", "oneShot", "direction" (degrees, 90=up), "spread", "initialVelocity", "gravityX", "gravityY", "startScale", "endScale", "startColor" [r,g,b,a], "endColor" [r,g,b,a], "emitting"
@@ -515,7 +515,7 @@ class AIEngineBridge {
             case "setText":           executeSetText(command, in: scene, onLog: onLog)
             case "addPhysicsBody":    executeAddPhysicsBody(command, in: scene, onLog: onLog)
             case "setVelocity":       executeSetVelocity(command, in: scene, onLog: onLog)
-            case "setGravity":        executeSetGravity(command, onLog: onLog)
+            case "setGravity":        executeSetGravity(command, in: scene, onLog: onLog)
             case "configureParticles": executeConfigureParticles(command, in: scene, onLog: onLog)
             case "configureTileMap":  executeConfigureTileMap(command, in: scene, onLog: onLog)
             case "paintTiles":        executePaintTiles(command, in: scene, onLog: onLog)
@@ -777,17 +777,21 @@ class AIEngineBridge {
         onLog("Set \"\(node.name)\" velocity to (\(x), \(y)).")
     }
 
-    private func executeSetGravity(_ cmd: [String: Any], onLog: (String) -> Void) {
+    private func executeSetGravity(_ cmd: [String: Any], in scene: Scene,
+                                   onLog: (String) -> Void) {
         guard let x = float(cmd, "x"), let y = float(cmd, "y") else {
             onLog("Error: setGravity requires x and y.")
             return
         }
+        // Persist on the scene (saved to the scene file) AND apply to
+        // the live physics world so it takes effect immediately.
+        scene.gravity = simd_float2(x, y)
         guard let world = PhysicsWorld.current else {
             onLog("Warning: No physics world available.")
             return
         }
         world.gravity = simd_float2(x, y)
-        onLog("World gravity set to (\(x), \(y)).")
+        onLog("World gravity set to (\(x), \(y)) — saved with the scene.")
     }
 
     // MARK: - Particles / TileMap / Camera / Timer commands

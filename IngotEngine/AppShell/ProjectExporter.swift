@@ -489,6 +489,7 @@ class ProjectExporter {
                 scene.rootNode = rootNode
 
                 SceneDeserializer.restoreActiveCamera(scene: scene, fromJSON: json)
+                SceneDeserializer.restoreWorldSettings(scene: scene, fromJSON: json)
 
                 let loader = MTKTextureLoader(device: device)
                 assignTextures(to: rootNode, loader: loader)
@@ -514,6 +515,7 @@ class ProjectExporter {
                     let next = Scene()
                     next.rootNode = sceneRoot
                     SceneDeserializer.restoreActiveCamera(scene: next, fromJSON: sceneJSON)
+                    SceneDeserializer.restoreWorldSettings(scene: next, fromJSON: sceneJSON)
                     self.assignTextures(to: sceneRoot, loader: MTKTextureLoader(device: self.device))
                     return next
                 }

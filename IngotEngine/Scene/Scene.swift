@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import simd
 
 class Scene {
 
@@ -17,6 +18,11 @@ class Scene {
 
     /// The camera that determines the rendering viewpoint.
     var activeCamera: CameraNode?
+
+    /// World gravity for this scene in px/s² (platformer: (0, -980);
+    /// top-down: (0, 0)). Saved in the scene file and applied to the
+    /// physics world whenever this scene becomes current.
+    var gravity = simd_float2(0, 0)
 
     // MARK: - Lifecycle (§8 frame loop)
 
@@ -42,6 +48,12 @@ class Scene {
     }
 
     // MARK: - Physics registration
+
+    /// Pushes this scene's world settings (gravity) into the physics
+    /// world. Called by the Engine when the scene becomes current.
+    func applyWorldSettings(to world: PhysicsWorld) {
+        world.gravity = gravity
+    }
 
     func registerPhysicsBodies(with world: PhysicsWorld) {
         registerBodiesRecursive(node: rootNode, world: world)

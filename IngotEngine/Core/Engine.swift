@@ -51,6 +51,7 @@ class Engine {
     var currentScene: Scene? {
         didSet {
             physicsWorld.removeAllBodies()
+            currentScene?.applyWorldSettings(to: physicsWorld)
             currentScene?.registerPhysicsBodies(with: physicsWorld)
         }
     }
@@ -127,9 +128,9 @@ class Engine {
         // spawn/destroy need to register/unregister bodies).
         PhysicsWorld.current = physicsWorld
 
-        EventBus.shared.connect(to: "Collision") { [weak self] in
-            self?.audio.playSound(named: "bump.wav")
-        }
+        // No built-in event reactions: sounds, effects, and game logic
+        // are authored per game (rules, scripts, AI commands) — the
+        // engine core stays policy-free.
     }
 
     // MARK: - Game Loop (§8 execution order)

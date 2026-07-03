@@ -98,10 +98,10 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `ParticleNode.swift` | Godot CPUParticles2D: CPU-simulated world-space particles with direction/spread/velocity/gravity, scale + color over lifetime, one-shot mode. Rendered as instanced quads with a shared soft-dot texture. |
 | `TileMapNode.swift` | Godot TileMap: sparse tile grid over an atlas texture. `setTile`/`fillRect`, `solidTiles` generate static colliders (one PhysicsBody per solid tile via body `offset`). A whole map batches into one draw call. |
 | `Prefab.swift` | Godot PackedScene: `PrefabLibrary.save/instantiate/list` (JSON files in Prefabs/), plus `Node.duplicate()`. Spawnable at runtime from rules, JS, and AI commands. |
-| `Scene.swift` | Owns rootNode tree + activeCamera. `findNode(named:)`, `findNodes(inGroup:)`. Registers node + tile-map physics bodies. |
+| `Scene.swift` | Owns rootNode tree + activeCamera + `gravity` (world gravity, saved per scene, pushed into PhysicsWorld when the scene becomes current). `findNode(named:)`, `findNodes(inGroup:)`. Registers node + tile-map physics bodies. |
 | `DemoScene.swift` | (No longer auto-loaded — new projects start blank. Kept as a reference scene builder; excluded from exports.) |
-| `SceneSerializer.swift` | Serializes EVERYTHING to JSON: nodes, transforms, physics, behaviors, scripts, UVs, modulate, particles, tile maps, timers, camera refs. `serializeSubtree` feeds prefabs. |
-| `SceneDeserializer.swift` | Polymorphic deserialization (§12.1). Rebuilds the complete scene from JSON including behaviors and physics bodies. `buildRule` is shared with the AI bridge. |
+| `SceneSerializer.swift` | Serializes EVERYTHING to JSON: nodes, transforms, physics, behaviors, scripts, UVs, modulate, particles, tile maps, timers, camera refs, world gravity. `serializeSubtree` feeds prefabs. |
+| `SceneDeserializer.swift` | Polymorphic deserialization (§12.1). Rebuilds the complete scene from JSON including behaviors and physics bodies. `restoreActiveCamera` + `restoreWorldSettings` finish a Scene rebuilt from JSON. `buildRule` is shared with the AI bridge. |
 
 ### Physics/ (2 files)
 | File | What it does |
@@ -159,7 +159,7 @@ State model (Godot-style — manual Save is never *required*):
 | `EventSheetViewController.swift` | Visual scripting surface. Displays behavior rules as When/Do rows with edit (✎) and delete buttons; + Add Rule opens the rule editor. |
 | `RuleEditorViewController.swift` | Sheet for editing one rule inline: event dropdown + parameter field, editable action rows (type dropdown + up to 3 params), add/remove actions, Save builds the Rule. |
 | `AssetBrowserViewController.swift` | (Superseded by AssetLibraryViewController — no longer wired into the layout; kept for reference.) |
-| `AIEngineBridge.swift` | LLM communication. Builds prompts with full scene context + prefab list, sends to OpenAI/Claude/Gemini, strips markdown, executes 20 JSON command types (createNode, deleteNode, updateProperty, setColor, setText, addPhysicsBody, setVelocity, setGravity, configureParticles, configureTileMap, paintTiles, setCameraFollow, configureTimer, savePrefab, spawnPrefab, addToGroup, addRule, attachScript, generateTexture, generateSound). |
+| `AIEngineBridge.swift` | LLM communication. Builds prompts with full scene context + prefab list, sends to OpenAI/Claude/Gemini, strips markdown, executes 24 JSON command types (createNode, deleteNode, updateProperty, setColor, setText, addPhysicsBody, setVelocity, setGravity — persisted on the scene, configureParticles, configureTileMap, paintTiles, setCameraFollow, configureTimer, savePrefab, spawnPrefab, addToGroup, addRule, attachScript, generateTexture, generateSound, defineAnimation, setDefaultAnimation, playAnimation, setCharacter). |
 | `ProjectExporter.swift` | Generates .swiftpm packages for iPhone/iPad/Apple TV. Creates Package.swift (`.iOSApplication` app product on iPhone/iPad — real installable app with bundle ID/orientations), GameApp.swift (SwiftUI), GameViewController.swift (Metal+UIKit, mirrors the editor renderer incl. tile maps/particles/z-order, design-resolution scaling, runtime scene loader), TouchControls.swift (virtual joystick + action button), ControllerInput.swift (GameController → InputManager, incl. Siri Remote). Copies assets/scripts/prefabs/ALL scenes/shaders, and auto-copies engine sources when `IngotEngineSourcePath` is set. |
 
 ---
@@ -254,9 +254,14 @@ On iOS these same action names are driven by the exported TouchControls overlay.
 
 ### Physics (per scene, settable via AI "setGravity")
 ```swift
-engine.physicsWorld.gravity = simd_float2(0, -980)  // platformer
-engine.physicsWorld.gravity = simd_float2(0, 0)     // top-down (default)
+scene.gravity = simd_float2(0, -980)  // platformer
+scene.gravity = simd_float2(0, 0)     // top-down (default)
 ```
+Gravity is a Scene property, saved in the scene file and applied to the
+PhysicsWorld whenever that scene becomes current (editor load, Play/Stop,
+runtime `changeScene`, exports). The AI's `setGravity` sets both the live
+world and the scene, so "set gravity to 0, -980" sticks across sessions
+once the scene is saved.
 
 ---
 
