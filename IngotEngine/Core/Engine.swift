@@ -51,6 +51,7 @@ class Engine {
     var currentScene: Scene? {
         didSet {
             physicsWorld.removeAllBodies()
+            currentScene?.applyWorldSettings(to: physicsWorld)
             currentScene?.registerPhysicsBodies(with: physicsWorld)
         }
     }

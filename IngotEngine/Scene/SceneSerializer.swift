@@ -27,6 +27,12 @@ struct SceneSerializer {
             dict["activeCamera"] = cameraName
         }
 
+        // World settings. Zero gravity (the default) is omitted so
+        // top-down scenes stay diff-clean.
+        if scene.gravity != simd_float2(0, 0) {
+            dict["gravity"] = [Double(scene.gravity.x), Double(scene.gravity.y)]
+        }
+
         return jsonString(from: dict)
     }
 

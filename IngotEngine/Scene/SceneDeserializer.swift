@@ -45,6 +45,18 @@ struct SceneDeserializer {
         }
     }
 
+    /// Restores scene-level world settings (gravity) from the
+    /// serialized data. Call alongside restoreActiveCamera whenever a
+    /// Scene is rebuilt from JSON.
+    static func restoreWorldSettings(scene: Scene, fromJSON jsonString: String) {
+        guard let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let g = json["gravity"] as? [Double], g.count == 2 else {
+            return
+        }
+        scene.gravity = simd_float2(Float(g[0]), Float(g[1]))
+    }
+
     // MARK: - Node building (§12.1 polymorphic dispatch)
 
     private static func buildNode(from dict: [String: Any]) -> Node {
