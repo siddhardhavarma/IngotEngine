@@ -86,7 +86,7 @@ class AssetLibraryViewController: NSViewController,
         tableView.delegate = self
         tableView.headerView = nil
         tableView.rowHeight = 36
-        tableView.selectionHighlightStyle = .sourceList
+        tableView.style = .sourceList
         tableView.doubleAction = #selector(rowDoubleClicked)
         tableView.target = self
 
