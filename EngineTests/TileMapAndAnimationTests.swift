@@ -122,6 +122,35 @@ final class TileMapAndAnimationTests: XCTestCase {
         XCTAssertEqual(sprite.uvRect.x, 0.5, accuracy: 0.0001)
     }
 
+    func testCharacterClipResolutionAndSheetSwap() {
+        var clip = AnimationClip(name: "run_left", gridWidth: 8, gridHeight: 1,
+                                 startFrame: 0, endFrame: 7, fps: 8, loops: true)
+        clip.character = "Player"
+        clip.textureName = "run_left.png"
+        AnimationLibrary.save(clip)
+
+        // Qualified and unambiguous short-name lookups both resolve.
+        XCTAssertEqual(AnimationLibrary.clip(named: "Player/run_left")?.name, "run_left")
+        XCTAssertEqual(AnimationLibrary.clip(named: "run_left")?.character, "Player")
+        XCTAssertEqual(AnimationLibrary.characters(), ["Player"])
+
+        // Playing the clip adopts its sheet (headless: no resolver,
+        // but textureName must switch so saves/exports record the
+        // right art).
+        let sprite = SpriteNode()
+        sprite.textureName = "idle.png"
+        sprite.playAnimation("run_left")
+        XCTAssertEqual(sprite.textureName, "run_left.png")
+
+        // A second character with the same clip name makes the short
+        // name ambiguous; the qualified name still resolves.
+        var other = clip
+        other.character = "Slime"
+        AnimationLibrary.save(other)
+        XCTAssertNil(AnimationLibrary.clip(named: "run_left"))
+        XCTAssertNotNil(AnimationLibrary.clip(named: "Slime/run_left"))
+    }
+
     func testDefaultAnimationAutoplaysOnReady() {
         AnimationLibrary.save(AnimationClip(name: "idle", gridWidth: 2, gridHeight: 2,
                                             startFrame: 0, endFrame: 3, fps: 4, loops: true))

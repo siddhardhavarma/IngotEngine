@@ -307,6 +307,12 @@ class EditorViewController: NSSplitViewController {
             self?.viewport.texture
         }
 
+        // Animation clips swap sprite sheets during playback — resolve
+        // the sheet files through the project texture cache.
+        SpriteNode.textureResolver = { [weak self] name in
+            self?.loadProjectTexture(named: name)
+        }
+
         // Runtime scene changes (the changeScene action / JS call) load
         // scenes from the project's Scenes/ folder during Play mode.
         engine.sceneLoader = { [weak self] name in

@@ -41,6 +41,12 @@ class SpriteNode: Node {
 
     // MARK: - Named animation playback (AnimationLibrary clips)
 
+    /// Loads a texture for an asset file name. Injected by the platform
+    /// shell (editor / exported game) so clip playback can swap sprite
+    /// sheets without the engine knowing about GPUs. nil in headless
+    /// runs — playback still updates textureName and UVs.
+    static var textureResolver: ((String) -> MTLTexture?)?
+
     /// The clip that auto-plays when the scene starts (e.g. "idle").
     /// Serialized with the scene.
     var defaultAnimationName: String?
@@ -54,17 +60,30 @@ class SpriteNode: Node {
         name = "Sprite"
     }
 
-    /// Starts a named clip from the project's AnimationLibrary.
-    /// Restarting the already-playing clip is a no-op (so calling it
-    /// every frame from a script is safe).
+    /// Starts a named clip from the project's AnimationLibrary
+    /// ("run_left", or "Player/run_left" when the short name is
+    /// ambiguous). If the clip carries its own sprite sheet, the
+    /// sprite's texture swaps to it. Restarting the already-playing
+    /// clip is a no-op (calling this every frame from a script is safe).
     override func playAnimation(_ name: String) {
-        if activeAnimation?.name == name { return }
+        if let active = activeAnimation,
+           active.name == name || active.qualifiedName == name { return }
+
         guard let clip = AnimationLibrary.clip(named: name) else {
             Log.warning("Animation \"\(name)\" not found.")
             return
         }
         activeAnimation = clip
         animationElapsed = 0
+
+        // The clip knows its sheet: switch to it so "run_left" always
+        // animates over run_left.png, whatever the sprite showed before.
+        if let sheet = clip.textureName, sheet != textureName {
+            textureName = sheet
+            if let resolved = SpriteNode.textureResolver?(sheet) {
+                texture = resolved
+            }
+        }
     }
 
     /// Stops clip playback, keeping the current frame visible.

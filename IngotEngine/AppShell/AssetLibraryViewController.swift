@@ -222,26 +222,60 @@ class AssetLibraryViewController: NSViewController,
 
         let panel = NSOpenPanel()
         panel.title = "Import Assets"
-        panel.message = "Images (png/jpg) and audio (wav/mp3) are copied into the project's Assets folder."
+        panel.message = "Pick files OR whole folders — images (png/jpg) and audio (wav/mp3) inside are copied into the project's Assets folder."
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.png, .jpeg, .wav, .mp3, .audio]
 
         panel.beginSheetModal(for: view.window!) { [weak self] response in
             guard let self, response == .OK else { return }
 
             var imported = 0
+            var skipped = 0
             for source in panel.urls {
-                let dest = assetsDir.appendingPathComponent(source.lastPathComponent)
-                try? FileManager.default.removeItem(at: dest)
-                if (try? FileManager.default.copyItem(at: source, to: dest)) != nil {
-                    imported += 1
-                }
+                self.importItem(at: source, into: assetsDir,
+                                imported: &imported, skipped: &skipped)
             }
 
-            self.onLog?("Imported \(imported) asset\(imported == 1 ? "" : "s").")
+            var message = "Imported \(imported) asset\(imported == 1 ? "" : "s")."
+            if skipped > 0 {
+                message += " Skipped \(skipped) unsupported file\(skipped == 1 ? "" : "s")."
+            }
+            self.onLog?(message)
             self.refresh()
+        }
+    }
+
+    /// Copies a file into Assets/, or recurses through a folder copying
+    /// every supported file inside it (flattened — the engine resolves
+    /// assets by file name).
+    private func importItem(at url: URL, into assetsDir: URL,
+                            imported: inout Int, skipped: inout Int) {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return }
+
+        if isDirectory.boolValue {
+            guard let children = try? fm.contentsOfDirectory(at: url,
+                                                             includingPropertiesForKeys: nil,
+                                                             options: .skipsHiddenFiles) else { return }
+            for child in children {
+                importItem(at: child, into: assetsDir,
+                           imported: &imported, skipped: &skipped)
+            }
+            return
+        }
+
+        let ext = url.pathExtension.lowercased()
+        guard Self.imageExtensions.contains(ext) || Self.audioExtensions.contains(ext) else {
+            skipped += 1
+            return
+        }
+
+        let dest = assetsDir.appendingPathComponent(url.lastPathComponent)
+        try? fm.removeItem(at: dest)
+        if (try? fm.copyItem(at: url, to: dest)) != nil {
+            imported += 1
         }
     }
 

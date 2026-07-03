@@ -495,6 +495,12 @@ class ProjectExporter {
 
                 engine.currentScene = scene
 
+                // Animation clips swap sprite sheets during playback.
+                SpriteNode.textureResolver = { [weak self] name in
+                    guard let self else { return nil }
+                    return self.loadAssetTexture(name, loader: MTKTextureLoader(device: self.device))
+                }
+
                 // Runtime scene changes (the changeScene action / JS
                 // call) load bundled scenes by name.
                 engine.sceneLoader = { [weak self] name in

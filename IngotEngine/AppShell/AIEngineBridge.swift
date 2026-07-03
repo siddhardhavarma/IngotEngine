@@ -139,7 +139,7 @@ class AIEngineBridge {
 
         21. "defineAnimation" — create/update a named sprite-sheet animation clip.
             Required: "name", "gridWidth", "gridHeight" (sheet layout), "startFrame", "endFrame" (0-based, inclusive)
-            Optional: "fps" (default 8), "loops" (default true)
+            Optional: "fps" (default 8), "loops" (default true), "character" (group clips per character, e.g. "Player"), "textureName" (the Assets/ sprite-sheet file — playing the clip swaps the sprite's texture to it)
 
         22. "setDefaultAnimation" — auto-play a clip on a sprite when the scene starts.
             Required: "targetName" (a SpriteNode), "animation" (clip name)
@@ -953,7 +953,7 @@ class AIEngineBridge {
             return
         }
 
-        let clip = AnimationClip(
+        var clip = AnimationClip(
             name: name,
             gridWidth: max(gridWidth, 1),
             gridHeight: max(gridHeight, 1),
@@ -962,9 +962,11 @@ class AIEngineBridge {
             fps: float(cmd, "fps") ?? 8,
             loops: cmd["loops"] as? Bool ?? true
         )
+        clip.character = cmd["character"] as? String
+        clip.textureName = cmd["textureName"] as? String
 
         if AnimationLibrary.save(clip) {
-            onLog("Defined animation \"\(name)\" (\(clip.frameCount) frames @ \(clip.fps) fps).")
+            onLog("Defined animation \"\(clip.qualifiedName)\" (\(clip.frameCount) frames @ \(clip.fps) fps\(clip.textureName.map { ", sheet: \($0)" } ?? "")).")
         } else {
             onLog("Error: Could not save animation \"\(name)\".")
         }
