@@ -1025,6 +1025,7 @@ class AIEngineBridge {
             return
         }
         sprite.defaultAnimationName = animation
+        sprite.showAnimationPreview()
         onLog("\"\(node.name)\" auto-plays \"\(animation)\" on scene start.")
     }
 
@@ -1053,6 +1054,7 @@ class AIEngineBridge {
            AnimationLibrary.clip(named: "\(character)/idle") != nil {
             sprite.defaultAnimationName = "idle"
         }
+        sprite.showAnimationPreview()
         onLog("Character \"\(character)\" attached to \"\(node.name)\".")
     }
 

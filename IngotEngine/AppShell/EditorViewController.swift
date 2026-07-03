@@ -414,6 +414,10 @@ class EditorViewController: NSSplitViewController {
             } else if sprite.texture == nil {
                 sprite.texture = viewport.texture
             }
+            // Design mode never runs update(), so show the resting
+            // animation pose (the clip's sheet, first frame) instead
+            // of whatever texture the file recorded.
+            sprite.showAnimationPreview()
         }
         if let tileMap = node as? TileMapNode {
             if let name = tileMap.textureName, let texture = loadProjectTexture(named: name) {
@@ -484,6 +488,7 @@ class EditorViewController: NSSplitViewController {
            AnimationLibrary.clip(named: "\(character)/idle") != nil {
             sprite.defaultAnimationName = "idle"
         }
+        sprite.showAnimationPreview()
         inspector.refreshUI()
         chatPanel.appendToHistory("Character \"\(character)\" → \"\(sprite.name)\". Scripts can now play its clips by name.")
     }

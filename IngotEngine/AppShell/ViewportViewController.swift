@@ -787,6 +787,38 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
             }
         }
 
+        // --- Selected tile map: make invisible collision visible ---
+        // Transparent atlas cells paint perfectly invisible tiles, and
+        // solid tiles collide as full squares regardless of their art.
+        // Outline every painted cell faintly (so stray tiles can be
+        // found and right-click-erased) and solid cells in red (the
+        // actual colliders the player lands on).
+        if let tileMap = (selectedNodeProvider?() as? TileMapNode) ?? paintTarget {
+            let origin = tileMap.globalTransform.columns.3
+            let halfTileX = tileMap.tileWidth / 2
+            let halfTileY = tileMap.tileHeight / 2
+            for (coord, index) in tileMap.tiles {
+                let center = tileMap.tileCenter(coord)
+                let cx = origin.x + center.x
+                let cy = origin.y + center.y
+                // Only the visible region — big maps stay cheap.
+                if cx + halfTileX < minX || cx - halfTileX > maxX ||
+                   cy + halfTileY < minY || cy - halfTileY > maxY { continue }
+
+                if tileMap.solidTiles.contains(index) {
+                    appendOutline(cx: cx, cy: cy,
+                                  halfX: halfTileX - px, halfY: halfTileY - px,
+                                  thickness: 1.5 * px,
+                                  color: simd_float4(1.0, 0.3, 0.25, 0.55), into: &overlay)
+                } else {
+                    appendOutline(cx: cx, cy: cy,
+                                  halfX: halfTileX - px, halfY: halfTileY - px,
+                                  thickness: px,
+                                  color: simd_float4(1, 1, 1, 0.14), into: &overlay)
+                }
+            }
+        }
+
         // --- Selection outline ---
         if let selected = selectedNodeProvider?(), selected.isEnabled {
             let p = selected.globalTransform.columns.3

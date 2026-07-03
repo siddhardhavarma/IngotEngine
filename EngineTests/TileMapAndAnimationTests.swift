@@ -226,6 +226,29 @@ final class TileMapAndAnimationTests: XCTestCase {
         XCTAssertEqual(sprite.characterName, "Player")
     }
 
+    func testShowAnimationPreviewFreezesRestingPose() {
+        var clip = AnimationClip(name: "idle", gridWidth: 10, gridHeight: 1,
+                                 startFrame: 0, endFrame: 9, fps: 8, loops: true)
+        clip.character = "Hero"
+        clip.textureName = "idle.png"
+        AnimationLibrary.save(clip)
+
+        // A sprite still showing older art, with a character attached.
+        let sprite = SpriteNode()
+        sprite.textureName = "old_art.png"
+        sprite.characterName = "Hero"
+
+        sprite.showAnimationPreview()
+
+        XCTAssertEqual(sprite.textureName, "idle.png",
+                       "The preview adopts the resting clip's sheet")
+        XCTAssertEqual(sprite.uvRect.x, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(sprite.uvRect.z, 0.1, accuracy: 0.0001,
+                       "Frozen on frame 0 of the 10-column sheet")
+        XCTAssertNil(sprite.activeAnimation,
+                     "Nothing actually plays until the scene starts")
+    }
+
     func testDefaultAnimationAutoplaysOnReady() {
         AnimationLibrary.save(AnimationClip(name: "idle", gridWidth: 2, gridHeight: 2,
                                             startFrame: 0, endFrame: 3, fps: 4, loops: true))
