@@ -82,6 +82,9 @@ enum GameAction {
     /// Instantiate a prefab at (x, y) under the scene root.
     case spawnPrefab(String, x: Float, y: Float)
 
+    /// Play a named AnimationLibrary clip on the owner sprite.
+    case playAnimation(String)
+
     /// Switch to another scene at the end of this frame
     /// (menu → level 1 → level 2 …).
     case changeScene(String)
@@ -99,6 +102,7 @@ enum GameAction {
         case .setProperty(let p, let v):     return "Set \(p) = \(v)"
         case .setVelocity(let x, let y):     return "Velocity (\(x), \(y))"
         case .spawnPrefab(let n, let x, let y): return "Spawn \"\(n)\" at (\(x), \(y))"
+        case .playAnimation(let a):          return "Play Animation \"\(a)\""
         case .changeScene(let s):            return "Change Scene → \"\(s)\""
         case .destroy:                       return "Destroy"
         }
@@ -247,6 +251,9 @@ class Behavior {
             if let world = PhysicsWorld.current {
                 registerBodies(of: instance, with: world)
             }
+
+        case .playAnimation(let name):
+            owner.playAnimation(name)
 
         case .changeScene(let name):
             Engine.current?.requestScene(named: name)

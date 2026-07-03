@@ -75,6 +75,39 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     private var dragOffset = simd_float2(0, 0)
     private var lastVisibleSprites: [SpriteNode] = []
 
+    // --- Editor navigation (design mode only) ---
+    //
+    // In design mode the viewport uses its own camera, so users can
+    // pan around a big level and zoom out to see everything without
+    // touching the game's CameraNode. During Play the game camera
+    // takes over. Scroll pans, pinch zooms, Cmd+0 resets.
+
+    private var editorCenter = simd_float2(0, 0)
+    private var editorZoom: Float = 1
+    private var editorViewInitialized = false
+
+    /// Re-centers the editor view on the game camera (or design center).
+    func resetEditorView() {
+        if let camera = engine.currentScene?.activeCamera {
+            let position = camera.globalTransform.columns.3
+            editorCenter = simd_float2(position.x, position.y)
+        } else {
+            editorCenter = simd_float2(400, 300)
+        }
+        editorZoom = 1
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard !engine.isPlaying else { return }
+        editorCenter.x -= Float(event.scrollingDeltaX) / editorZoom
+        editorCenter.y += Float(event.scrollingDeltaY) / editorZoom
+    }
+
+    override func magnify(with event: NSEvent) {
+        guard !engine.isPlaying else { return }
+        editorZoom = min(max(editorZoom * (1 + Float(event.magnification)), 0.1), 8)
+    }
+
     // --- Tile painting state ---
 
     /// When set, left-click/drag paints tiles on this map instead of
@@ -166,6 +199,11 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     }
 
     override func keyDown(with event: NSEvent) {
+        // Cmd+0: reset the editor view (like Xcode/Figma).
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "0" {
+            resetEditorView()
+            return
+        }
         if !event.isARepeat {
             InputManager.shared.setKeyPressed(event.keyCode, isPressed: true)
         }
@@ -191,17 +229,19 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         var screenX = Float(viewPoint.x) * scaleX
         var screenY = Float(viewPoint.y) * scaleY
 
-        // If there's an active camera, reverse the view transform
-        // to get from screen pixels back to world coordinates.
-        if let camera = engine.currentScene?.activeCamera {
+        let sw = Float(metalView.drawableSize.width)
+        let sh = Float(metalView.drawableSize.height)
+
+        // Reverse whichever view transform is active — the game camera
+        // during Play, the editor camera in design mode.
+        if engine.isPlaying, let camera = engine.currentScene?.activeCamera {
             let camPos = camera.globalTransform.columns.3
             let z = camera.zoom
-            let sw = Float(metalView.drawableSize.width)
-            let sh = Float(metalView.drawableSize.height)
-
-            // Reverse: undo translate(screenCenter), undo scale(zoom), undo translate(-cam)
             screenX = (screenX - sw / 2) / z + camPos.x
             screenY = (screenY - sh / 2) / z + camPos.y
+        } else {
+            screenX = (screenX - sw / 2) / editorZoom + editorCenter.x
+            screenY = (screenY - sh / 2) / editorZoom + editorCenter.y
         }
 
         return simd_float2(screenX, screenY)
@@ -495,21 +535,28 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         //
         let projection = orthographicProjection(width: screenWidth, height: screenHeight)
 
+        // First frame: start the editor view where the game camera is.
+        if !editorViewInitialized, engine.currentScene != nil {
+            editorViewInitialized = true
+            resetEditorView()
+        }
+
         let viewMatrix: simd_float4x4
-        if let camera = engine.currentScene?.activeCamera {
+        if engine.isPlaying, let camera = engine.currentScene?.activeCamera {
+            // Play mode: the game camera (with screen shake).
             let camPos = camera.globalTransform.columns.3
             let z = camera.zoom
-            // Screen shake displaces the camera without moving the node.
             let cx = camPos.x + camera.shakeOffset.x
             let cy = camPos.y + camera.shakeOffset.y
 
-            let centerOnCamera = translationMatrix(tx: -cx, ty: -cy)
-            let applyZoom = scaleMatrix(sx: z, sy: z)
-            let centerOnScreen = translationMatrix(tx: screenWidth / 2, ty: screenHeight / 2)
-
-            viewMatrix = centerOnScreen * applyZoom * centerOnCamera
+            viewMatrix = translationMatrix(tx: screenWidth / 2, ty: screenHeight / 2)
+                       * scaleMatrix(sx: z, sy: z)
+                       * translationMatrix(tx: -cx, ty: -cy)
         } else {
-            viewMatrix = matrix_identity_float4x4
+            // Design mode: the editor's own pan/zoom.
+            viewMatrix = translationMatrix(tx: screenWidth / 2, ty: screenHeight / 2)
+                       * scaleMatrix(sx: editorZoom, sy: editorZoom)
+                       * translationMatrix(tx: -editorCenter.x, ty: -editorCenter.y)
         }
 
         var uniforms = Uniforms(

@@ -72,13 +72,14 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `FrameAnimation.swift` | Grid-based sprite sheet animation. `AnimationBehavior` drives frame cycling on SpriteNodes. |
 | `AssetHandle.swift` | Type-safe `AssetHandle<T>` with string IDs. Phantom types: `TextureAsset`, `SoundAsset`. |
 | `Log.swift` | Leveled logging (debug/info/warning/error) with optional editor chat sink. |
+| `AnimationLibrary.swift` | Named sprite animations (Godot SpriteFrames-ish): `AnimationClip` (grid, frame range, fps, loop) stored per project in animations.json. Played via `node.playAnimation("walk")` (JS), the playAnimation rule action, AI commands, or a sprite's auto-playing `defaultAnimationName`. |
 | `Node+JSExport.swift` | JSExport bridge: x, y, rotationDegrees, scaleX/Y, zIndexJS, visible, name, jsZoom, setFrame(), getChild(), emitSignal(), setVelocity(), spawn(prefab,x,y), destroy(). |
 | `AIConfiguration.swift` | `AIProvider` enum + `AISettings` struct: provider, per-provider model IDs (user-editable), API keys. `load()`/`save()` persist preferences to UserDefaults and keys to the Keychain. |
 
 ### Logic/ (4 files)
 | File | What it does |
 |------|-------------|
-| `Behavior.swift` | The event-action rule system. Events: `onActionHeld`, `onActionJustPressed`, `everyFrame`, `onStart`, `onCollision`, `onSignal` (wired to the EventBus — timers/triggers drive rules). Actions: `move`, `rotate`, `emitSignal`, `playSound`, `setProperty`, `setVelocity`, `spawnPrefab`, `changeScene`, `destroy` (unregisters physics). |
+| `Behavior.swift` | The event-action rule system. Events: `onActionHeld`, `onActionJustPressed`, `everyFrame`, `onStart`, `onCollision`, `onSignal` (wired to the EventBus — timers/triggers drive rules). Actions: `move`, `rotate`, `emitSignal`, `playSound`, `setProperty`, `setVelocity`, `spawnPrefab`, `playAnimation`, `changeScene`, `destroy` (unregisters physics). |
 | `ScriptBehavior.swift` | Loads `.js` lifecycle files from Scripts/. Evaluates ONCE at load, then calls `Script.update(node, dt, time)` each frame via `JSValue.invokeMethod`. Injects `InputManager.shared` as `Input` into JS context. |
 | `Signal.swift` | Observer pattern: array of closures, `emit()` calls all. |
 | `EventBus.swift` | Global singleton pub/sub. `connect(to: "Collision") { ... }`, `emit("Collision")`. Collisions also emit per-node `"Collision:<NodeName>"` signals. |
@@ -123,7 +124,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (14 files — the macOS editor)
+### AppShell/ (15 files — the macOS editor)
 
 Editor layout (three columns, organized "what exists → what you see → what it is"):
 ```
@@ -134,7 +135,7 @@ Editor layout (three columns, organized "what exists → what you see → what i
 │ ASSET LIBRARY │ LOGIC: Event Sheet |     │ ✦ AI COPILOT    │
 │ import/assign │        Script Editor     │ (always open)   │
 └───────────────┴──────────────────────────┴─────────────────┘
-Toolbar: Save · Scenes ▾ · ▶ Play · ✦ AI Settings · Export
+Toolbar: Save · Scenes ▾ · Animations · ▶ Play · ✦ AI Settings · Export
 ```
 
 | File | What it does |
@@ -143,8 +144,9 @@ Toolbar: Save · Scenes ▾ · ▶ Play · ✦ AI Settings · Export
 | `AssetLibraryViewController.swift` | Left-dock asset hub: Import… copies png/jpg/wav/mp3 into Assets/, list shows real image thumbnails + prefabs, filter segments (All/Art/Audio/Prefabs). Double-click assigns: texture → selected Sprite/TileMap (records `textureName` for persistence + export), audio → selected AudioNode, prefab → placed in the scene. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
+| `AnimationEditorViewController.swift` | The Animations window (toolbar button): clip list with +/−, grid/frame-range/fps/loop fields, and a live preview that plays frames from any Asset Library image. Saves to animations.json. |
 | `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
-| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Dynamic instance buffer grows with the scene. Camera shake applied to the view matrix. Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase) when the inspector's Paint Mode is on. |
+| `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Design-mode editor camera: scroll pans, pinch zooms, Cmd+0 resets to the game camera (Play mode always uses the game camera + shake). Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase). |
 | `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type, double-click renames in place (undoable). Refreshes after AI commands and inspector edits. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |
 | `InspectorViewController.swift` | Property editor with dynamic per-type sections — the form is rebuilt per selection so only relevant sections exist (no gaps). Every node type is hand-editable: Identity (incl. Save as Prefab), Transform, Camera (zoom/follow/smoothing), Shape (color well, size), Text (string/font/color), Sprite (modulate tint), Audio, Trigger, Timer, Particles (full emission config + color wells), Tile Map (atlas/solid tiles/paint controls), Physics (add/edit/remove body), Script. Closure-bound rows: adding a property = one line. |
 | `ChatPanelViewController.swift` | AI copilot panel (right dock, always visible). Adaptive color-coded history, selection-context header ("Selected: Player"), busy spinner while requests run, errors in red. Prompt field fires onPromptSubmitted. |
@@ -176,7 +178,13 @@ var Script = {
 };
 ```
 The JS file is parsed ONCE. Each frame calls the compiled `update` function.
-Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `changeScene(name)`, `destroy()`.
+Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
+
+### Animation Workflow
+Create clips in the Animations window (toolbar) — sprite-sheet grid, frame range, fps, loop, with live preview from any Asset Library image. Clips live in animations.json and travel into exports. Play them from JS (`node.playAnimation("walk")`), rules (playAnimation action), AI (`defineAnimation`/`setDefaultAnimation`/`playAnimation`), or auto-play via the sprite's Animation field in the inspector.
+
+### AI Conversation Memory
+The copilot sends a rolling window of the last few exchanges ("User: …" / "Executed: …") with each prompt, so follow-ups like "make it bigger" resolve against what was just built.
 
 ### Batched Multi-Texture Rendering
 All quads share the same 6-vertex geometry. The scene (sprites, tiles, particles) is flattened into a per-frame instance list, z-sorted, and drawn as one instanced draw call per texture run (`baseInstance` keeps `[[instance_id]]` aligned with the shared buffer). A 1,000-tile map with one atlas costs one draw call.
@@ -242,12 +250,14 @@ engine.physicsWorld.gravity = simd_float2(0, 0)     // top-down (default)
 
 ---
 
+## Testing & CI
+- `swift test` at the repo root runs the headless engine tests (the root Package.swift compiles Core/Logic/Physics/Scene/Platform as a library — no GPU needed). Suites: serialization round-trips, physics (gravity/resolution/triggers/layers), behaviors & input edges, tile maps, animations, prefabs.
+- `.github/workflows/ci.yml` runs `swift test` plus a full `xcodebuild` of the editor app on every push/PR.
+
 ## Known Gaps / TODO
 1. No `.xcodeproj` generation — export uses `.swiftpm` only (the iPhone/iPad package is a runnable `.iOSApplication` app, though)
 2. No file-watching for EXTERNAL script/asset edits (the built-in Script Editor does hot-reload on save, but changes made in other apps aren't noticed)
-3. AI-generated textures (generateTexture) don't set `textureName` yet — they display immediately but don't persist through save/load like Asset Library assignments do
-4. Dynamic-vs-dynamic collisions detect but don't resolve
-5. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
-6. No headless unit-test suite / CI yet (the engine core is GPU-free by design, so this is cheap to add)
-7. Tile paint mode has no atlas-preview palette — the paint tile is chosen by index
-8. Exported app icon uses the platform default (set one in Xcode after export)
+3. Dynamic-vs-dynamic collisions detect but don't resolve
+4. EventBus connections are never disconnected (weak-captured no-ops accumulate across scene reloads)
+5. Tile paint mode has no atlas-preview palette — the paint tile is chosen by index
+6. Exported app icon uses the platform default (set one in Xcode after export)

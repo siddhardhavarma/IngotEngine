@@ -39,9 +39,69 @@ class SpriteNode: Node {
     /// waiting for a real texture to download.
     var isLoadingTexture: Bool = false
 
+    // MARK: - Named animation playback (AnimationLibrary clips)
+
+    /// The clip that auto-plays when the scene starts (e.g. "idle").
+    /// Serialized with the scene.
+    var defaultAnimationName: String?
+
+    /// The clip currently playing, if any.
+    private(set) var activeAnimation: AnimationClip?
+    private var animationElapsed: Float = 0
+
     override init() {
         super.init()
         name = "Sprite"
+    }
+
+    /// Starts a named clip from the project's AnimationLibrary.
+    /// Restarting the already-playing clip is a no-op (so calling it
+    /// every frame from a script is safe).
+    override func playAnimation(_ name: String) {
+        if activeAnimation?.name == name { return }
+        guard let clip = AnimationLibrary.clip(named: name) else {
+            Log.warning("Animation \"\(name)\" not found.")
+            return
+        }
+        activeAnimation = clip
+        animationElapsed = 0
+    }
+
+    /// Stops clip playback, keeping the current frame visible.
+    override func stopAnimation() {
+        activeAnimation = nil
+        animationElapsed = 0
+    }
+
+    override func ready() {
+        super.ready()
+        if let name = defaultAnimationName {
+            playAnimation(name)
+        }
+    }
+
+    override func update(deltaTime: CFTimeInterval, input: InputManager) {
+        guard isEnabled else { return }
+        super.update(deltaTime: deltaTime, input: input)
+
+        guard let clip = activeAnimation else { return }
+
+        animationElapsed += Float(deltaTime)
+        let rawFrame = Int(animationElapsed * max(clip.fps, 0.1))
+
+        let frame: Int
+        if clip.loops {
+            frame = rawFrame % clip.frameCount
+        } else {
+            frame = min(rawFrame, clip.frameCount - 1)
+            if rawFrame >= clip.frameCount {
+                activeAnimation = nil
+            }
+        }
+
+        let (column, row) = clip.gridPosition(frame: frame)
+        setSpriteSheetFrame(gridWidth: clip.gridWidth, gridHeight: clip.gridHeight,
+                            column: column, row: row)
     }
 
     // MARK: - Sprite Sheet

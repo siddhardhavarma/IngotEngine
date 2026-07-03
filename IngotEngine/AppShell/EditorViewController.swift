@@ -29,6 +29,7 @@ private extension NSToolbarItem.Identifier {
     static let playStop   = NSToolbarItem.Identifier("PlayStop")
     static let save       = NSToolbarItem.Identifier("Save")
     static let scenes     = NSToolbarItem.Identifier("Scenes")
+    static let animations = NSToolbarItem.Identifier("Animations")
     static let export     = NSToolbarItem.Identifier("Export")
     static let aiSettings = NSToolbarItem.Identifier("AISettings")
 }
@@ -59,6 +60,13 @@ class EditorViewController: NSSplitViewController {
 
     /// Loaded project textures, cached by asset file name.
     private var textureCache: [String: MTLTexture] = [:]
+
+    /// The Animation Editor window (created lazily, reused).
+    private var animationWindow: NSWindow?
+
+    /// Rolling copilot conversation memory ("User: …" / "Executed: …"),
+    /// sent with every prompt so follow-ups have context.
+    private var aiHistory: [String] = []
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -582,7 +590,8 @@ class EditorViewController: NSSplitViewController {
             return
         }
         registerUndoSnapshot()
-        let fullPrompt = aiBridge.buildPrompt(userText: prompt, currentScene: scene)
+        let fullPrompt = aiBridge.buildPrompt(userText: prompt, currentScene: scene,
+                                              history: aiHistory)
         chatPanel.appendToHistory("AI: Sending to \(aiSettings.activeModel)…")
 
         let bridge = self.aiBridge
@@ -594,9 +603,18 @@ class EditorViewController: NSSplitViewController {
             defer { self.chatPanel.setBusy(false) }
             do {
                 let jsonResponse = try await bridge.sendPromptToLLM(prompt: fullPrompt, settings: settings)
-                bridge.executeCommands(jsonString: jsonResponse, in: scene, settings: settings) { [weak self] log in
+                let executed = bridge.executeCommands(jsonString: jsonResponse, in: scene, settings: settings) { [weak self] log in
                     self?.chatPanel.appendToHistory("  \(log)")
                 }
+
+                // Remember the exchange (rolling window) so the next
+                // prompt can say "make it bigger" and be understood.
+                self.aiHistory.append("User: \(prompt)")
+                self.aiHistory.append("Executed: \(executed.isEmpty ? "nothing" : executed.joined(separator: ", "))")
+                if self.aiHistory.count > 12 {
+                    self.aiHistory.removeFirst(self.aiHistory.count - 12)
+                }
+
                 // AI commands can create/delete/rename nodes and save
                 // prefabs — refresh every panel that mirrors state.
                 self.sidebar.refresh()
@@ -615,11 +633,11 @@ class EditorViewController: NSSplitViewController {
 extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.playStop, .flexibleSpace, .save, .scenes, .export, .aiSettings]
+        [.playStop, .flexibleSpace, .save, .scenes, .animations, .export, .aiSettings]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.save, .scenes, .flexibleSpace, .playStop, .flexibleSpace, .aiSettings, .export]
+        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace, .aiSettings, .export]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -654,6 +672,15 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
             let menu = NSMenu()
             menu.delegate = self
             item.menu = menu
+            return item
+
+        case .animations:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "figure.walk.motion", accessibilityDescription: "Animations")
+            item.label = "Animations"
+            item.toolTip = "Create sprite animations (playable from scripts and rules)"
+            item.target = self
+            item.action = #selector(toolbarAnimations)
             return item
 
         case .export:
@@ -717,6 +744,34 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
     @objc private func toolbarPlayStop() { togglePlay() }
     @objc private func toolbarSave() { saveCurrentScene() }
     @objc private func toolbarExport() { exportToiOS() }
+
+    /// Opens (or brings forward) the Animation Editor window.
+    @objc private func toolbarAnimations() {
+        if let window = animationWindow {
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let editor = AnimationEditorViewController()
+        editor.onLibraryChanged = { [weak self] in
+            self?.inspector.refreshUI()
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Animations — \(ProjectManager.shared.projectFile.gameName)"
+        window.contentViewController = editor
+        // ARC owns the window (see AppDelegate for the over-release story).
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+
+        animationWindow = window
+    }
 
     @objc private func toolbarAISettings() {
         let settingsSheet = AISettingsViewController()
