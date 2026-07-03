@@ -67,7 +67,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `GameClock.swift` | Tracks deltaTime, totalTime, fixed-step accumulator for deterministic physics. |
 | `Math.swift` | `orthographicProjection()`, `translationMatrix()`, `rotationMatrix()`, `scaleMatrix()` — all return `simd_float4x4`. |
 | `ProjectManager.swift` | Singleton. Manages project directory (Assets/, Scenes/, Scripts/, Prefabs/). Saves/loads scenes as JSON. Manages project.json manifest. |
-| `ProjectFile.swift` | Codable struct for `project.json`: gameName, entryScene, designWidth/Height, asset registry. |
+| `ProjectFile.swift` | Codable struct for `project.json`: gameName, entryScene (what exports boot into), lastOpenedScene (editor session restore), designWidth/Height, asset registry. |
 | `Tween.swift` | Property interpolation: `Tween(from:to:duration:easing:setter:)`. TweenManager auto-removes completed tweens. |
 | `FrameAnimation.swift` | Grid-based sprite sheet animation. `AnimationBehavior` drives frame cycling on SpriteNodes. |
 | `AssetHandle.swift` | Type-safe `AssetHandle<T>` with string IDs. Phantom types: `TextureAsset`, `SoundAsset`. |
@@ -135,16 +135,22 @@ Editor layout (three columns, organized "what exists → what you see → what i
 │ ASSET LIBRARY │ LOGIC: Event Sheet |     │ ✦ AI COPILOT    │
 │ import/assign │        Script Editor     │ (always open)   │
 └───────────────┴──────────────────────────┴─────────────────┘
-Toolbar: Save · Scenes ▾ · Animations · ▶ Play · ✦ AI Settings · Export
+Toolbar: Save · Scenes ▾ · Animations · ▶ Play · Project · ✦ AI Settings · Export
 ```
+
+State model (Godot-style — manual Save is never *required*):
+- The editor reopens `lastOpenedScene` on launch (fresh projects save the demo as the entry scene immediately)
+- Pressing ▶ Play saves the scene first; switching scenes saves the one you leave; quitting persists everything (`persistSession()`)
+- project.json = settings (name, design size, entry scene — edited via the Project toolbar sheet); animations.json = clips; Scenes/, Scripts/, Prefabs/, Assets/ = everything else
 
 | File | What it does |
 |------|-------------|
 | `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
-| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… copies png/jpg/wav/mp3 into Assets/, list shows real image thumbnails + prefabs, filter segments (All/Art/Audio/Prefabs). Double-click assigns: texture → selected Sprite/TileMap (records `textureName` for persistence + export), audio → selected AudioNode, prefab → placed in the scene. |
+| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… copies png/jpg/wav/mp3 into Assets/, list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
 | `AnimationEditorViewController.swift` | The Animations window (toolbar button): clip list with +/−, grid/frame-range/fps/loop fields, and a live preview that plays frames from any Asset Library image. Saves to animations.json. |
+| `ProjectSettingsViewController.swift` | Project sheet (gear toolbar button): game name, design resolution, entry scene picker — writes project.json. |
 | `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
 | `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Design-mode editor camera: scroll pans, pinch zooms, Cmd+0 resets to the game camera (Play mode always uses the game camera + shake). Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase). |
 | `SidebarViewController.swift` | NSOutlineView scene hierarchy. SF Symbol icons per node type, double-click renames in place (undoable). Refreshes after AI commands and inspector edits. Bottom action bar: +/- nodes (10 types incl. particles/tile map/timer, with undo), play/stop. |

@@ -26,12 +26,13 @@ import MetalKit
 
 // MARK: - Toolbar item identifiers
 private extension NSToolbarItem.Identifier {
-    static let playStop   = NSToolbarItem.Identifier("PlayStop")
-    static let save       = NSToolbarItem.Identifier("Save")
-    static let scenes     = NSToolbarItem.Identifier("Scenes")
-    static let animations = NSToolbarItem.Identifier("Animations")
-    static let export     = NSToolbarItem.Identifier("Export")
-    static let aiSettings = NSToolbarItem.Identifier("AISettings")
+    static let playStop        = NSToolbarItem.Identifier("PlayStop")
+    static let save            = NSToolbarItem.Identifier("Save")
+    static let scenes          = NSToolbarItem.Identifier("Scenes")
+    static let animations      = NSToolbarItem.Identifier("Animations")
+    static let projectSettings = NSToolbarItem.Identifier("ProjectSettings")
+    static let export          = NSToolbarItem.Identifier("Export")
+    static let aiSettings      = NSToolbarItem.Identifier("AISettings")
 }
 
 class EditorViewController: NSSplitViewController {
@@ -46,6 +47,7 @@ class EditorViewController: NSSplitViewController {
     private var chatPanel: ChatPanelViewController!
     private var eventSheet: EventSheetViewController!
     private var scriptEditor: ScriptEditorViewController!
+    private var logicTabs: NSTabViewController!
 
     private let aiBridge = AIEngineBridge()
 
@@ -108,7 +110,7 @@ class EditorViewController: NSSplitViewController {
         viewportItem.minimumThickness = 320
         centerColumn.addSplitViewItem(viewportItem)
 
-        let logicTabs = NSTabViewController()
+        logicTabs = NSTabViewController()
         logicTabs.tabStyle = .segmentedControlOnTop
 
         eventSheet = EventSheetViewController()
@@ -234,15 +236,56 @@ class EditorViewController: NSSplitViewController {
         assetLibrary.onPlacePrefab = { [weak self] name in
             self?.placePrefab(named: name)
         }
+        assetLibrary.onOpenScript = { [weak self] name in
+            self?.openScript(named: name, assignToSelection: true)
+        }
+        assetLibrary.onOpenAnimations = { [weak self] in
+            self?.toolbarAnimations()
+        }
+
+        inspector.onEditScript = { [weak self] name in
+            self?.openScript(named: name, assignToSelection: false)
+        }
+    }
+
+    /// Opens a script in the Script Editor tab; optionally assigns it
+    /// to the selected node first (the Asset Library double-click flow).
+    private func openScript(named name: String, assignToSelection: Bool) {
+        if assignToSelection, let node = inspector.selectedNode {
+            registerUndoSnapshot()
+            node.removeBehaviors { $0 is ScriptBehavior }
+            node.addBehavior(ScriptBehavior(scriptName: name))
+            inspector.refreshUI()
+            chatPanel.appendToHistory("Script \"\(name)\" → \"\(node.name)\".")
+        }
+        scriptEditor.openScript(named: name)
+        // Bring the Script Editor tab forward.
+        logicTabs.selectedTabViewItemIndex = 1
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
 
+        // --- Session restore (Godot-style) ---
+        // Reopen the scene from last session; fall back to the entry
+        // scene; only build the demo for a brand-new project — and
+        // save it immediately so the project always has a scene file.
         if engine.currentScene == nil {
-            let demoScene = DemoScene()
-            demoScene.setup(texture: viewport.texture)
-            engine.currentScene = demoScene
+            let projectFile = ProjectManager.shared.projectFile
+            let startScene = projectFile.lastOpenedScene ?? projectFile.entryScene
+
+            if ProjectManager.shared.listScenes().contains(startScene) {
+                switchToScene(named: startScene, savingCurrent: false)
+            } else if let firstScene = ProjectManager.shared.listScenes().first {
+                switchToScene(named: firstScene, savingCurrent: false)
+            } else {
+                let demoScene = DemoScene()
+                demoScene.setup(texture: viewport.texture)
+                engine.currentScene = demoScene
+                currentSceneName = projectFile.entryScene
+                ProjectManager.shared.saveScene(demoScene, named: currentSceneName)
+                rememberOpenScene()
+            }
         }
 
         if let sceneRoot = engine.currentScene?.rootNode {
@@ -280,6 +323,7 @@ class EditorViewController: NSSplitViewController {
             self.sidebar.rootNode = scene.rootNode
             self.inspector.selectedNode = nil
             self.eventSheet.targetNode = nil
+            self.chatPanel.setContext("No selection — commands target the whole scene")
             self.chatPanel.appendToHistory("Scene changed.")
         }
     }
@@ -384,22 +428,62 @@ class EditorViewController: NSSplitViewController {
         chatPanel.appendToHistory("Placed prefab \"\(name)\" at (400, 300).")
     }
 
+    // MARK: - Session persistence
+
+    /// Records the open scene in project.json so the next launch
+    /// restores it.
+    private func rememberOpenScene() {
+        ProjectManager.shared.projectFile.lastOpenedScene = currentSceneName
+        ProjectManager.shared.saveProjectFile()
+    }
+
+    /// Saves everything that represents session state: the open scene
+    /// and the project manifest. Called on Play, on quit, and when
+    /// leaving a scene — pressing Save by hand is never *required*.
+    ///
+    /// NEVER saves the scene while the game is running: Play mutates
+    /// the live tree (gravity, rules, scripts), and writing that
+    /// runtime state would clobber the design-time save made when
+    /// Play started.
+    func persistSession() {
+        if !engine.isPlaying, let scene = engine.currentScene {
+            ProjectManager.shared.saveScene(scene, named: currentSceneName)
+        }
+        rememberOpenScene()
+    }
+
     // MARK: - Play / Stop
 
+    /// Play saves the design state first; Stop RESTORES it. The game
+    /// runs on the live scene tree, so without the restore, everything
+    /// would stay wherever gameplay left it (Godot avoids this by
+    /// running a separate instance; the save/restore pair is our
+    /// equivalent).
     private func togglePlay() {
-        engine.isPlaying.toggle()
+        if engine.isPlaying {
+            engine.isPlaying = false
+            sidebar.updatePlayButton(isPlaying: false)
+            updatePlayStopToolbarItem()
+            chatPanel.appendToHistory("■ Stopped — scene restored to its saved state")
+            switchToScene(named: currentSceneName, savingCurrent: false)
+            return
+        }
 
-        // Re-register physics on every play start so nodes added since
-        // the scene was set (sidebar, AI commands, painted tiles) collide.
-        if engine.isPlaying, let scene = engine.currentScene {
+        // Save-on-run BEFORE the game touches anything.
+        persistSession()
+
+        engine.isPlaying = true
+
+        // Re-register physics so nodes added since the scene was set
+        // (sidebar, AI commands, painted tiles) collide.
+        if let scene = engine.currentScene {
             engine.physicsWorld.removeAllBodies()
             scene.registerPhysicsBodies(with: engine.physicsWorld)
         }
 
-        sidebar.updatePlayButton(isPlaying: engine.isPlaying)
+        sidebar.updatePlayButton(isPlaying: true)
         updatePlayStopToolbarItem()
-
-        chatPanel.appendToHistory(engine.isPlaying ? "▶ Playing" : "■ Stopped")
+        chatPanel.appendToHistory("▶ Playing")
     }
 
     private func updatePlayStopToolbarItem() {
@@ -413,11 +497,16 @@ class EditorViewController: NSSplitViewController {
     // MARK: - Scenes (save / load / switch / create)
 
     private func saveCurrentScene() {
+        guard !engine.isPlaying else {
+            chatPanel.appendToHistory("Can't save during Play — the design state was already saved when Play started.")
+            return
+        }
         guard let scene = engine.currentScene else {
             chatPanel.appendToHistory("Nothing to save.")
             return
         }
         ProjectManager.shared.saveScene(scene, named: currentSceneName)
+        rememberOpenScene()
         chatPanel.appendToHistory("Saved scene: \(currentSceneName)")
     }
 
@@ -428,6 +517,15 @@ class EditorViewController: NSSplitViewController {
     /// Switches the editor to another scene file, optionally saving the
     /// one being left first (so no work is lost on switch).
     private func switchToScene(named name: String, savingCurrent: Bool = true) {
+        // Switching while the game runs would save runtime state —
+        // stop first (which restores nothing here; the target scene
+        // load below replaces the tree anyway).
+        if engine.isPlaying {
+            engine.isPlaying = false
+            sidebar.updatePlayButton(isPlaying: false)
+            updatePlayStopToolbarItem()
+        }
+
         if savingCurrent, let scene = engine.currentScene {
             ProjectManager.shared.saveScene(scene, named: currentSceneName)
         }
@@ -444,6 +542,7 @@ class EditorViewController: NSSplitViewController {
 
         engine.currentScene = scene
         currentSceneName = name
+        rememberOpenScene()
         sidebar.rootNode = result.rootNode
         inspector.selectedNode = nil
         eventSheet.targetNode = nil
@@ -482,6 +581,7 @@ class EditorViewController: NSSplitViewController {
 
         engine.currentScene = scene
         currentSceneName = name
+        rememberOpenScene()
         sidebar.rootNode = scene.rootNode
         inspector.selectedNode = nil
         eventSheet.targetNode = nil
@@ -554,6 +654,10 @@ class EditorViewController: NSSplitViewController {
             target.registerUndoSnapshot()
             guard let restoredRoot = SceneDeserializer.deserialize(jsonString: snapshotJSON) else { return }
             SceneDeserializer.restoreTextures(textureMap, to: restoredRoot)
+            // The name-keyed texture map can mis-restore when nodes
+            // share a name — textureName-based reload is authoritative
+            // for anything assigned from the Asset Library.
+            target.assignProjectTextures(to: restoredRoot)
             scene.rootNode = restoredRoot
             target.engine.physicsWorld.removeAllBodies()
             scene.registerPhysicsBodies(with: target.engine.physicsWorld)
@@ -633,11 +737,12 @@ class EditorViewController: NSSplitViewController {
 extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.playStop, .flexibleSpace, .save, .scenes, .animations, .export, .aiSettings]
+        [.playStop, .flexibleSpace, .save, .scenes, .animations, .projectSettings, .export, .aiSettings]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace, .aiSettings, .export]
+        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace,
+         .projectSettings, .aiSettings, .export]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -690,6 +795,15 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
             item.toolTip = "Export to iPhone / iPad / Apple TV"
             item.target = self
             item.action = #selector(toolbarExport)
+            return item
+
+        case .projectSettings:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Project Settings")
+            item.label = "Project"
+            item.toolTip = "Game name, design resolution, entry scene"
+            item.target = self
+            item.action = #selector(toolbarProjectSettings)
             return item
 
         case .aiSettings:
@@ -767,10 +881,24 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
         window.contentViewController = editor
         // ARC owns the window (see AppDelegate for the over-release story).
         window.isReleasedWhenClosed = false
-        window.center()
+        window.setFrameAutosaveName("IngotAnimationsWindow")
+        if !window.setFrameUsingName("IngotAnimationsWindow") {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         animationWindow = window
+    }
+
+    @objc private func toolbarProjectSettings() {
+        let sheet = ProjectSettingsViewController()
+        sheet.onSaved = { [weak self] in
+            guard let self else { return }
+            let projectFile = ProjectManager.shared.projectFile
+            self.view.window?.title = "Ingot Engine — \(projectFile.gameName) — \(self.currentSceneName)"
+            self.chatPanel.appendToHistory("Project settings saved (\(projectFile.gameName), \(projectFile.designWidth)×\(projectFile.designHeight), entry: \(projectFile.entryScene)).")
+        }
+        presentAsSheet(sheet)
     }
 
     @objc private func toolbarAISettings() {

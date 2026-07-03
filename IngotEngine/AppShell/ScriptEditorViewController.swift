@@ -199,6 +199,15 @@ class ScriptEditorViewController: NSViewController, NSTextViewDelegate, NSTextFi
               name != "No scripts",
               let scriptsDir = ProjectManager.shared.scriptsURL else { return }
 
+        // Re-selecting the open script must not clobber unsaved edits.
+        if name == currentScriptName && hasUnsavedChanges { return }
+
+        // Autosave philosophy: switching scripts saves the one you're
+        // leaving instead of silently discarding its edits.
+        if hasUnsavedChanges, currentScriptName != nil, name != currentScriptName {
+            saveCurrentScript()
+        }
+
         let fileURL = scriptsDir.appendingPathComponent(name)
         let code = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
 
