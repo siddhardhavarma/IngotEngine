@@ -65,10 +65,13 @@ struct AnimationClip: Codable, Equatable {
         return name
     }
 
-    /// The (column, row) of the n-th frame of this clip.
+    /// The (column, row) of the n-th frame of this clip, clamped to
+    /// the last real cell so a frame range that overshoots the grid
+    /// can never address outside the sheet.
     func gridPosition(frame: Int) -> (column: Int, row: Int) {
-        let index = startFrame + min(max(frame, 0), frameCount - 1)
         let columns = max(gridWidth, 1)
+        let capacity = columns * max(gridHeight, 1)
+        let index = min(startFrame + min(max(frame, 0), frameCount - 1), capacity - 1)
         return (index % columns, index / columns)
     }
 }

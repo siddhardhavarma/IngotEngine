@@ -150,6 +150,27 @@ final class TileMapAndAnimationTests: XCTestCase {
         XCTAssertEqual(sprite.uvRect.y, 0.5, accuracy: 0.0001)
     }
 
+    func testOvershootingFrameRangeNeverSamplesOutsideTheSheet() {
+        // 10 real frames (10×1 grid) but the clip claims End Frame 10 —
+        // the classic off-by-one. This used to address row 1 of a
+        // 1-row sheet for one frame per cycle: a visible blink at the
+        // end of every loop.
+        AnimationLibrary.save(AnimationClip(name: "blinky", gridWidth: 10, gridHeight: 1,
+                                            startFrame: 0, endFrame: 10, fps: 1, loops: true))
+
+        let sprite = SpriteNode()
+        sprite.playAnimation("blinky")
+
+        // Step through several full cycles, one frame at a time.
+        for _ in 0..<25 {
+            sprite.update(deltaTime: 1.0, input: .shared)
+            XCTAssertLessThanOrEqual(sprite.uvRect.x + sprite.uvRect.z, 1.0001,
+                                     "UV must stay inside the sheet horizontally")
+            XCTAssertLessThanOrEqual(sprite.uvRect.y + sprite.uvRect.w, 1.0001,
+                                     "UV must stay inside the sheet vertically")
+        }
+    }
+
     func testNonLoopingClipStopsOnLastFrame() {
         AnimationLibrary.save(AnimationClip(name: "pop", gridWidth: 2, gridHeight: 1,
                                             startFrame: 0, endFrame: 1, fps: 10, loops: false))

@@ -330,6 +330,18 @@ class AnimationEditorViewController: NSViewController,
             fps: max(Float(fpsField.stringValue) ?? 8, 0.1),
             loops: loopsCheckbox.state == .on
         )
+
+        // Keep the frame range inside the sheet: 10 frames = indices
+        // 0–9. An end frame past the last cell would sample outside
+        // the atlas and blink at the end of every loop.
+        let lastCell = clip.gridWidth * clip.gridHeight - 1
+        if clip.endFrame > lastCell {
+            clip.endFrame = lastCell
+            endFrameField.stringValue = String(lastCell)
+            statusLabel.stringValue = "End frame clamped to \(lastCell) (the sheet's last cell)."
+        }
+        clip.startFrame = min(clip.startFrame, clip.endFrame)
+
         clip.character = selectedCharacter
         clip.textureName = selectedSheetName()
 
@@ -418,8 +430,9 @@ class AnimationEditorViewController: NSViewController,
 
         let gridWidth = max(Int(gridWidthField.stringValue) ?? 2, 1)
         let gridHeight = max(Int(gridHeightField.stringValue) ?? 2, 1)
-        let startFrame = max(Int(startFrameField.stringValue) ?? 0, 0)
-        let endFrame = max(Int(endFrameField.stringValue) ?? startFrame, startFrame)
+        let lastCell = gridWidth * gridHeight - 1
+        let startFrame = min(max(Int(startFrameField.stringValue) ?? 0, 0), lastCell)
+        let endFrame = min(max(Int(endFrameField.stringValue) ?? startFrame, startFrame), lastCell)
         let fps = max(Double(fpsField.stringValue) ?? 8, 0.1)
         let frameCount = endFrame - startFrame + 1
 
