@@ -271,8 +271,9 @@ class EditorViewController: NSSplitViewController {
 
         // --- Session restore (Godot-style) ---
         // Reopen the scene from last session; fall back to the entry
-        // scene; only build the demo for a brand-new project — and
-        // save it immediately so the project always has a scene file.
+        // scene. A brand-new project starts COMPLETELY BLANK — just a
+        // centered camera (same scaffold as New Scene…), saved
+        // immediately so the project always has a scene file.
         if engine.currentScene == nil {
             let projectFile = ProjectManager.shared.projectFile
             let startScene = projectFile.lastOpenedScene ?? projectFile.entryScene
@@ -282,11 +283,14 @@ class EditorViewController: NSSplitViewController {
             } else if let firstScene = ProjectManager.shared.listScenes().first {
                 switchToScene(named: firstScene, savingCurrent: false)
             } else {
-                let demoScene = DemoScene()
-                demoScene.setup(texture: viewport.texture)
-                engine.currentScene = demoScene
+                let scene = Scene()
+                let camera = CameraNode()
+                camera.position = simd_float2(400, 300)
+                scene.rootNode.addChild(camera)
+                scene.activeCamera = camera
+                engine.currentScene = scene
                 currentSceneName = projectFile.entryScene
-                ProjectManager.shared.saveScene(demoScene, named: currentSceneName)
+                ProjectManager.shared.saveScene(scene, named: currentSceneName)
                 rememberOpenScene()
             }
         }
