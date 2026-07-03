@@ -461,7 +461,20 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         palette.image = image
         palette.columns = columns
         palette.rows = rows
-        palette.solidTiles = tileMap.solidTiles
+        palette.isEditable = false
+        // Color-code the applied tile set's categories, solids in red.
+        var overlays: [Int: NSColor] = [:]
+        if let setName = tileMap.tileSetName,
+           let tileSet = TileSetLibrary.tileSet(named: setName) {
+            let names = (tileSet.categories ?? [:]).keys.sorted()
+            for (index, category) in names.enumerated() {
+                for tile in tileSet.categories?[category] ?? [] {
+                    overlays[tile] = TileAtlasView.categoryColor(index)
+                }
+            }
+        }
+        for tile in tileMap.solidTiles { overlays[tile] = .systemRed }
+        palette.overlays = overlays
         palette.selectedIndex = Int(paintIndexField?.stringValue ?? "0") ?? 0
         palette.wantsLayer = true
         palette.layer?.cornerRadius = 4
