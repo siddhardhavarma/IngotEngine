@@ -55,6 +55,7 @@ class ProjectManager {
 
         // Per-project caches must not leak across projects.
         AnimationLibrary.invalidate()
+        TileSetLibrary.invalidate()
 
         // Load existing project.json, or create a default one.
         let projectFileURL = url.appendingPathComponent("project.json")

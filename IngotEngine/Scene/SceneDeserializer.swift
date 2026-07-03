@@ -169,6 +169,7 @@ struct SceneDeserializer {
             if let c = t["atlasColumns"] as? Int { tileMap.atlasColumns = c }
             if let r = t["atlasRows"] as? Int { tileMap.atlasRows = r }
             if let solids = t["solidTiles"] as? [Int] { tileMap.solidTiles = Set(solids) }
+            if let tileSet = t["tileSet"] as? String { tileMap.tileSetName = tileSet }
             if let tileTriples = t["tiles"] as? [[Int]] {
                 var tiles: [TileCoord: Int] = [:]
                 for triple in tileTriples where triple.count == 3 {

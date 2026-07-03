@@ -154,7 +154,7 @@ struct SceneSerializer {
         }
 
         if let tileMap = node as? TileMapNode {
-            let tileMapDict: [String: Any] = [
+            var tileMapDict: [String: Any] = [
                 "tileWidth": Double(tileMap.tileWidth),
                 "tileHeight": Double(tileMap.tileHeight),
                 "atlasColumns": tileMap.atlasColumns,
@@ -165,6 +165,9 @@ struct SceneSerializer {
                     .map { [$0.key.x, $0.key.y, $0.value] }
                     .sorted { ($0[1], $0[0]) < ($1[1], $1[0]) },
             ]
+            if let tileSetName = tileMap.tileSetName {
+                tileMapDict["tileSet"] = tileSetName
+            }
             dict["tileMap"] = tileMapDict
         }
 
