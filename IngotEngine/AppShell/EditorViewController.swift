@@ -242,6 +242,9 @@ class EditorViewController: NSSplitViewController {
         assetLibrary.onOpenAnimations = { [weak self] in
             self?.toolbarAnimations()
         }
+        assetLibrary.onAttachCharacter = { [weak self] character in
+            self?.attachCharacter(character)
+        }
 
         inspector.onEditScript = { [weak self] name in
             self?.openScript(named: name, assignToSelection: false)
@@ -305,6 +308,12 @@ class EditorViewController: NSSplitViewController {
         // so they're visible the instant the command runs.
         aiBridge.defaultTextureProvider = { [weak self] in
             self?.viewport.texture
+        }
+
+        // Animation clips swap sprite sheets during playback — resolve
+        // the sheet files through the project texture cache.
+        SpriteNode.textureResolver = { [weak self] name in
+            self?.loadProjectTexture(named: name)
         }
 
         // Runtime scene changes (the changeScene action / JS call) load
@@ -411,6 +420,25 @@ class EditorViewController: NSSplitViewController {
         audio.soundFile = fileName
         inspector.refreshUI()
         chatPanel.appendToHistory("Sound \"\(fileName)\" → \"\(audio.name)\".")
+    }
+
+    /// Attaches an animation character to the selected sprite: its
+    /// clips resolve by short name in scripts, and the sprite auto-
+    /// plays "idle" on scene start when the character defines one.
+    private func attachCharacter(_ character: String) {
+        guard let sprite = inspector.selectedNode as? SpriteNode else {
+            chatPanel.appendToHistory("Select a Sprite first, then double-click the character.")
+            return
+        }
+
+        registerUndoSnapshot()
+        sprite.characterName = character
+        if sprite.defaultAnimationName == nil,
+           AnimationLibrary.clip(named: "\(character)/idle") != nil {
+            sprite.defaultAnimationName = "idle"
+        }
+        inspector.refreshUI()
+        chatPanel.appendToHistory("Character \"\(character)\" → \"\(sprite.name)\". Scripts can now play its clips by name.")
     }
 
     private func placePrefab(named name: String) {

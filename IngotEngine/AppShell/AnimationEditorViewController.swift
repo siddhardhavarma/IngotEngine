@@ -4,17 +4,18 @@
 //
 //  §5.7 — The Animation Editor (its own window).
 //
-//  Create and tune named sprite animations ("walk", "explode", …):
+//  Character-based animation authoring (Godot SpriteFrames-style):
+//  create a character ("Player", "Slime", …), then define every clip
+//  it can perform — idle_up, run_left, attack — each bound to its own
+//  sprite sheet from the Asset Library. Because the SHEET IS SAVED ON
+//  THE CLIP, playing "run_left" swaps the sprite's texture to
+//  run_left.png automatically; scripts just call
+//  node.playAnimation("run_left") (or "Player/run_left" when two
+//  characters share a clip name).
 //
-//    Left:  the project's clips (+ / − to add/remove)
-//    Right: clip settings (sprite-sheet grid, frame range, fps, loop)
-//           and a LIVE PREVIEW that plays the frames from any image
-//           in the Asset Library
-//
-//  Saved clips live in the project's animations.json and can be played
-//  from anywhere: node.playAnimation("walk") in scripts, the
-//  playAnimation rule action, the AI's defineAnimation/playAnimation
-//  commands, or auto-played via a sprite's Default Animation.
+//    Left:  character popup + the selected character's clips
+//    Right: clip settings (sheet, grid, frame range, fps, loop)
+//           and a live preview playing from the clip's own sheet
 //
 
 import Cocoa
@@ -26,12 +27,17 @@ class AnimationEditorViewController: NSViewController,
     /// Called after any clip change so the editor can refresh menus.
     var onLibraryChanged: (() -> Void)?
 
-    // --- Clip list ---
+    // --- Character + clip list ---
+    private var characterPopup: NSPopUpButton!
     private var clipTable: NSTableView!
-    private var clipNames: [String] = []
+    private var visibleClips: [AnimationClip] = []
+
+    /// nil = the "(No Character)" group.
+    private var selectedCharacter: String?
 
     // --- Clip fields ---
     private var nameField: NSTextField!
+    private var sheetPopup: NSPopUpButton!
     private var gridWidthField: NSTextField!
     private var gridHeightField: NSTextField!
     private var startFrameField: NSTextField!
@@ -42,26 +48,40 @@ class AnimationEditorViewController: NSViewController,
 
     // --- Preview ---
     private var previewImageView: NSImageView!
-    private var previewSourcePopup: NSPopUpButton!
     private var previewTimer: Timer?
     private var previewSheet: CGImage?
     private var previewFrame = 0
+    private var previewAccumulator: Double = 0
 
     // MARK: - Layout
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 680, height: 460))
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        // --- Left: clip list ---
+        // --- Left column: character picker + clips ---
+        let characterLabel = NSTextField(labelWithString: "CHARACTER")
+        characterLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        characterLabel.textColor = .tertiaryLabelColor
+
+        characterPopup = NSPopUpButton()
+        characterPopup.controlSize = .small
+        characterPopup.target = self
+        characterPopup.action = #selector(characterChanged)
+
+        let newCharacterButton = NSButton(title: "New Character…", target: self,
+                                          action: #selector(newCharacterClicked))
+        newCharacterButton.bezelStyle = .rounded
+        newCharacterButton.controlSize = .small
+
         clipTable = NSTableView()
         clipTable.dataSource = self
         clipTable.delegate = self
         clipTable.headerView = nil
-        clipTable.rowHeight = 24
+        clipTable.rowHeight = 32
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Clip"))
         clipTable.addTableColumn(column)
 
@@ -69,18 +89,23 @@ class AnimationEditorViewController: NSViewController,
         listScroll.documentView = clipTable
         listScroll.hasVerticalScroller = true
         listScroll.autohidesScrollers = true
-        listScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let addButton = NSButton(title: "+", target: self, action: #selector(addClipClicked))
-        addButton.bezelStyle = .smallSquare
-        let removeButton = NSButton(title: "−", target: self, action: #selector(removeClipClicked))
-        removeButton.bezelStyle = .smallSquare
-        let listButtons = NSStackView(views: [addButton, removeButton])
+        let addClipButton = NSButton(title: "+", target: self, action: #selector(addClipClicked))
+        addClipButton.bezelStyle = .smallSquare
+        let removeClipButton = NSButton(title: "−", target: self, action: #selector(removeClipClicked))
+        removeClipButton.bezelStyle = .smallSquare
+        let listButtons = NSStackView(views: [addClipButton, removeClipButton])
         listButtons.orientation = .horizontal
         listButtons.spacing = 4
-        listButtons.translatesAutoresizingMaskIntoConstraints = false
 
-        // --- Right: clip fields ---
+        let leftStack = NSStackView(views: [characterLabel, characterPopup, newCharacterButton,
+                                            listScroll, listButtons])
+        leftStack.orientation = .vertical
+        leftStack.alignment = .leading
+        leftStack.spacing = 8
+        leftStack.translatesAutoresizingMaskIntoConstraints = false
+
+        // --- Right column: clip fields + preview ---
         func label(_ text: String) -> NSTextField {
             let l = NSTextField(labelWithString: text)
             l.font = NSFont.systemFont(ofSize: 11)
@@ -97,17 +122,25 @@ class AnimationEditorViewController: NSViewController,
             return f
         }
 
-        nameField = field("walk"); nameField.widthAnchor.constraint(equalToConstant: 140).isActive = true
-        gridWidthField = field("4")
-        gridHeightField = field("4")
+        nameField = field("run_left")
+        nameField.widthAnchor.constraint(equalToConstant: 150).isActive = true
+
+        sheetPopup = NSPopUpButton()
+        sheetPopup.controlSize = .small
+        sheetPopup.target = self
+        sheetPopup.action = #selector(sheetChanged)
+
+        gridWidthField = field("8")
+        gridHeightField = field("1")
         startFrameField = field("0")
-        endFrameField = field("3")
+        endFrameField = field("7")
         fpsField = field("8")
         loopsCheckbox = NSButton(checkboxWithTitle: "Loops", target: nil, action: nil)
         loopsCheckbox.state = .on
 
         let grid = NSGridView(views: [
             [label("Name"), nameField],
+            [label("Sprite Sheet"), sheetPopup],
             [label("Grid Cols"), gridWidthField],
             [label("Grid Rows"), gridHeightField],
             [label("Start Frame"), startFrameField],
@@ -117,7 +150,6 @@ class AnimationEditorViewController: NSViewController,
         ])
         grid.rowSpacing = 6
         grid.columnSpacing = 8
-        grid.translatesAutoresizingMaskIntoConstraints = false
 
         let saveButton = NSButton(title: "Save Clip", target: self, action: #selector(saveClipClicked))
         saveButton.bezelStyle = .rounded
@@ -126,53 +158,45 @@ class AnimationEditorViewController: NSViewController,
         statusLabel = NSTextField(labelWithString: "")
         statusLabel.font = NSFont.systemFont(ofSize: 10)
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
 
-        // --- Preview ---
-        let previewHeader = NSTextField(labelWithString: "PREVIEW")
+        let previewHeader = NSTextField(labelWithString: "PREVIEW (from the clip's sheet)")
         previewHeader.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         previewHeader.textColor = .tertiaryLabelColor
-
-        previewSourcePopup = NSPopUpButton()
-        previewSourcePopup.controlSize = .small
-        previewSourcePopup.target = self
-        previewSourcePopup.action = #selector(previewSourceChanged)
 
         previewImageView = NSImageView()
         previewImageView.imageScaling = .scaleProportionallyUpOrDown
         previewImageView.wantsLayer = true
         previewImageView.layer?.backgroundColor = NSColor(white: 0.15, alpha: 1).cgColor
         previewImageView.layer?.cornerRadius = 6
-        previewImageView.translatesAutoresizingMaskIntoConstraints = false
-        previewImageView.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        previewImageView.heightAnchor.constraint(equalToConstant: 160).isActive = true
+        previewImageView.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        previewImageView.heightAnchor.constraint(equalToConstant: 170).isActive = true
 
         let rightStack = NSStackView(views: [grid, saveButton, statusLabel,
-                                             previewHeader, previewSourcePopup, previewImageView])
+                                             previewHeader, previewImageView])
         rightStack.orientation = .vertical
         rightStack.alignment = .leading
         rightStack.spacing = 10
         rightStack.translatesAutoresizingMaskIntoConstraints = false
 
-        view.addSubview(listScroll)
-        view.addSubview(listButtons)
+        view.addSubview(leftStack)
         view.addSubview(rightStack)
 
         NSLayoutConstraint.activate([
-            listScroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            listScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            listScroll.widthAnchor.constraint(equalToConstant: 180),
-            listScroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -6),
-
-            listButtons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            leftStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            leftStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            leftStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            leftStack.widthAnchor.constraint(equalToConstant: 200),
+            listScroll.widthAnchor.constraint(equalToConstant: 200),
 
             rightStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            rightStack.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: 20),
+            rightStack.leadingAnchor.constraint(equalTo: leftStack.trailingAnchor, constant: 24),
             rightStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
         ])
 
+        reloadCharacters()
+        reloadSheets()
         reloadClips()
-        reloadPreviewSources()
         startPreviewTimer()
     }
 
@@ -184,43 +208,109 @@ class AnimationEditorViewController: NSViewController,
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        reloadCharacters()
+        reloadSheets()
         reloadClips()
-        reloadPreviewSources()
         startPreviewTimer()
     }
 
-    // MARK: - Clip list
+    // MARK: - Characters
 
-    private func reloadClips() {
-        clipNames = AnimationLibrary.list()
-        clipTable.reloadData()
+    private func reloadCharacters() {
+        let characters = AnimationLibrary.characters()
+        characterPopup.removeAllItems()
+        characterPopup.addItem(withTitle: "(No Character)")
+        characterPopup.addItems(withTitles: characters)
+
+        if let selected = selectedCharacter, characters.contains(selected) {
+            characterPopup.selectItem(withTitle: selected)
+        } else if let first = characters.first, selectedCharacter != nil {
+            selectedCharacter = first
+            characterPopup.selectItem(withTitle: first)
+        } else {
+            characterPopup.selectItem(at: 0)
+        }
     }
 
-    private func selectedClipName() -> String? {
+    @objc private func characterChanged() {
+        selectedCharacter = characterPopup.indexOfSelectedItem == 0
+            ? nil : characterPopup.titleOfSelectedItem
+        reloadClips()
+    }
+
+    @objc private func newCharacterClicked() {
+        let alert = NSAlert()
+        alert.messageText = "New Character"
+        alert.informativeText = "A character groups all the animations one object can perform (Player, Slime, Boss…)."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let nameInput = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        nameInput.placeholderString = "Player"
+        alert.accessoryView = nameInput
+        alert.window.initialFirstResponder = nameInput
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let character = nameInput.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !character.isEmpty else { return }
+
+        // A character exists once it has a clip — start it with one.
+        var clip = AnimationClip(name: "idle")
+        clip.character = character
+        AnimationLibrary.save(clip)
+
+        selectedCharacter = character
+        reloadCharacters()
+        reloadClips()
+        selectClip(named: "idle")
+        onLibraryChanged?()
+    }
+
+    // MARK: - Clips
+
+    private func reloadClips() {
+        visibleClips = AnimationLibrary.clips(forCharacter: selectedCharacter)
+        clipTable.reloadData()
+        if let first = visibleClips.first {
+            populateFields(with: first)
+            clipTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+    }
+
+    private func selectClip(named name: String) {
+        if let row = visibleClips.firstIndex(where: { $0.name == name }) {
+            clipTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            populateFields(with: visibleClips[row])
+        }
+    }
+
+    private func selectedClip() -> AnimationClip? {
         let row = clipTable.selectedRow
-        guard row >= 0, row < clipNames.count else { return nil }
-        return clipNames[row]
+        guard row >= 0, row < visibleClips.count else { return nil }
+        return visibleClips[row]
     }
 
     @objc private func addClipClicked() {
         var index = 1
-        var name = "NewAnimation"
-        while AnimationLibrary.clip(named: name) != nil {
+        var name = "clip"
+        let existing = Set(visibleClips.map { $0.name })
+        while existing.contains(name) {
             index += 1
-            name = "NewAnimation\(index)"
+            name = "clip\(index)"
         }
-        AnimationLibrary.save(AnimationClip(name: name))
+        var clip = AnimationClip(name: name)
+        clip.character = selectedCharacter
+        AnimationLibrary.save(clip)
         reloadClips()
-        if let row = clipNames.firstIndex(of: name) {
-            clipTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
+        selectClip(named: name)
         onLibraryChanged?()
     }
 
     @objc private func removeClipClicked() {
-        guard let name = selectedClipName() else { return }
-        AnimationLibrary.delete(named: name)
+        guard let clip = selectedClip() else { return }
+        AnimationLibrary.delete(named: clip.qualifiedName)
         reloadClips()
+        reloadCharacters()
         onLibraryChanged?()
     }
 
@@ -231,12 +321,7 @@ class AnimationEditorViewController: NSViewController,
             return
         }
 
-        // Renaming: remove the clip that was selected under its old name.
-        if let old = selectedClipName(), old != name {
-            AnimationLibrary.delete(named: old)
-        }
-
-        let clip = AnimationClip(
+        var clip = AnimationClip(
             name: name,
             gridWidth: max(Int(gridWidthField.stringValue) ?? 2, 1),
             gridHeight: max(Int(gridHeightField.stringValue) ?? 2, 1),
@@ -245,12 +330,20 @@ class AnimationEditorViewController: NSViewController,
             fps: max(Float(fpsField.stringValue) ?? 8, 0.1),
             loops: loopsCheckbox.state == .on
         )
+        clip.character = selectedCharacter
+        clip.textureName = selectedSheetName()
+
+        // Renaming: drop the previously selected clip's old key.
+        if let old = selectedClip(), old.name != name {
+            AnimationLibrary.delete(named: old.qualifiedName)
+        }
+
         AnimationLibrary.save(clip)
         reloadClips()
-        if let row = clipNames.firstIndex(of: name) {
-            clipTable.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
-        statusLabel.stringValue = "Saved \"\(name)\" — play it with node.playAnimation(\"\(name)\")"
+        selectClip(named: name)
+
+        let playName = clip.qualifiedName
+        statusLabel.stringValue = "Saved — node.playAnimation(\"\(playName)\")"
         onLibraryChanged?()
     }
 
@@ -262,42 +355,50 @@ class AnimationEditorViewController: NSViewController,
         endFrameField.stringValue = String(clip.endFrame)
         fpsField.stringValue = String(format: "%.1f", clip.fps)
         loopsCheckbox.state = clip.loops ? .on : .off
+
+        // The clip's own sheet drives the popup and the preview.
+        if let sheet = clip.textureName, sheetPopup.itemTitles.contains(sheet) {
+            sheetPopup.selectItem(withTitle: sheet)
+        } else {
+            sheetPopup.selectItem(at: 0)   // "(none)"
+        }
+        loadPreviewSheet()
         previewFrame = 0
     }
 
-    // MARK: - Preview
+    // MARK: - Sprite sheets + preview
 
-    private func reloadPreviewSources() {
-        previewSourcePopup.removeAllItems()
+    private func reloadSheets() {
+        sheetPopup.removeAllItems()
+        sheetPopup.addItem(withTitle: "(none)")
 
         guard let assetsDir = ProjectManager.shared.assetsURL,
               let files = try? FileManager.default.contentsOfDirectory(
                 at: assetsDir, includingPropertiesForKeys: nil, options: .skipsHiddenFiles)
-        else {
-            previewSourcePopup.addItem(withTitle: "No images in Assets")
-            return
-        }
+        else { return }
 
         let images = files
             .filter { ["png", "jpg", "jpeg"].contains($0.pathExtension.lowercased()) }
             .map { $0.lastPathComponent }
             .sorted()
-
-        if images.isEmpty {
-            previewSourcePopup.addItem(withTitle: "No images in Assets")
-        } else {
-            previewSourcePopup.addItems(withTitles: images)
-        }
-        previewSourceChanged()
+        sheetPopup.addItems(withTitles: images)
     }
 
-    @objc private func previewSourceChanged() {
+    private func selectedSheetName() -> String? {
+        guard sheetPopup.indexOfSelectedItem > 0 else { return nil }
+        return sheetPopup.titleOfSelectedItem
+    }
+
+    @objc private func sheetChanged() {
+        loadPreviewSheet()
+    }
+
+    private func loadPreviewSheet() {
         previewSheet = nil
-        guard let name = previewSourcePopup.titleOfSelectedItem,
-              name != "No images in Assets",
+        previewImageView.image = nil
+        guard let sheet = selectedSheetName(),
               let assetsDir = ProjectManager.shared.assetsURL,
-              let image = NSImage(contentsOf: assetsDir.appendingPathComponent(name)) else {
-            previewImageView.image = nil
+              let image = NSImage(contentsOf: assetsDir.appendingPathComponent(sheet)) else {
             return
         }
         previewSheet = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
@@ -310,9 +411,8 @@ class AnimationEditorViewController: NSViewController,
         }
     }
 
-    /// Steps the preview one frame at the clip's own pacing (the timer
-    /// runs at 12 Hz; frames advance when enough time has accumulated).
-    private var previewAccumulator: Double = 0
+    /// Steps the preview at the clip's own fps (the timer ticks at
+    /// 12 Hz; frames advance when enough time has accumulated).
     private func advancePreview() {
         guard let sheet = previewSheet else { return }
 
@@ -348,27 +448,37 @@ class AnimationEditorViewController: NSViewController,
     // MARK: - NSTableViewDataSource / Delegate
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        clipNames.count
+        visibleClips.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?,
                    row: Int) -> NSView? {
-        guard row < clipNames.count else { return nil }
+        guard row < visibleClips.count else { return nil }
+        let clip = visibleClips[row]
+
         let cell = NSTableCellView()
-        let label = NSTextField(labelWithString: clipNames[row])
+        let label = NSTextField(labelWithString: clip.name)
         label.font = NSFont.systemFont(ofSize: 12)
         label.translatesAutoresizingMaskIntoConstraints = false
+
+        let sheetHint = NSTextField(labelWithString: clip.textureName ?? "no sheet")
+        sheetHint.font = NSFont.systemFont(ofSize: 9)
+        sheetHint.textColor = clip.textureName == nil ? .systemOrange : .tertiaryLabelColor
+        sheetHint.translatesAutoresizingMaskIntoConstraints = false
+
         cell.addSubview(label)
+        cell.addSubview(sheetHint)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-            label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            label.topAnchor.constraint(equalTo: cell.topAnchor, constant: -1),
+            sheetHint.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+            sheetHint.topAnchor.constraint(equalTo: label.bottomAnchor, constant: -2),
         ])
         return cell
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard let name = selectedClipName(),
-              let clip = AnimationLibrary.clip(named: name) else { return }
+        guard let clip = selectedClip() else { return }
         populateFields(with: clip)
     }
 }

@@ -80,6 +80,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     private var toggleHandlers: [ObjectIdentifier: (Bool) -> Void] = [:]
     private var colorHandlers: [ObjectIdentifier: (NSColor) -> Void] = [:]
     private var buttonHandlers: [ObjectIdentifier: () -> Void] = [:]
+    private var popupHandlers: [ObjectIdentifier: (String) -> Void] = [:]
 
     /// Closures that re-read model values into controls (refreshUI).
     private var valueRefreshers: [() -> Void] = []
@@ -168,6 +169,7 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         toggleHandlers.removeAll()
         colorHandlers.removeAll()
         buttonHandlers.removeAll()
+        popupHandlers.removeAll()
         valueRefreshers.removeAll()
         resizableViews.removeAll()
         yCursor = 8
@@ -267,6 +269,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
                                     blue: CGFloat(sprite.modulate.z), alpha: CGFloat(sprite.modulate.w)) },
                      set: { c in sprite.modulate = simd_float4(Float(c.redComponent), Float(c.greenComponent),
                                                                Float(c.blueComponent), Float(c.alphaComponent)) })
+            popupRow("Character",
+                     options: ["(none)"] + AnimationLibrary.characters(),
+                     get: { sprite.characterName ?? "(none)" },
+                     set: { sprite.characterName = $0 == "(none)" ? nil : $0 })
             textRow("Animation", placeholder: "clip name (auto-plays)",
                     get: { sprite.defaultAnimationName ?? "" }) { value in
                 sprite.defaultAnimationName = value.isEmpty ? nil : value
@@ -493,6 +499,38 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         }
     }
 
+    /// A "label: [dropdown]" row (used for the animation character).
+    private func popupRow(_ label: String, options: [String],
+                          get: @escaping () -> String,
+                          set: @escaping (String) -> Void) {
+        let rowLabel = NSTextField(labelWithString: label)
+        rowLabel.font = NSFont.systemFont(ofSize: 11)
+        rowLabel.textColor = .secondaryLabelColor
+        rowLabel.frame = NSRect(x: margin, y: yCursor + 2, width: 76, height: 16)
+        rowLabel.alignment = .right
+        contentView.addSubview(rowLabel)
+
+        let popup = NSPopUpButton()
+        popup.controlSize = .small
+        popup.addItems(withTitles: options)
+        popup.selectItem(withTitle: get())
+        popup.target = self
+        popup.action = #selector(popupChanged(_:))
+        popup.frame = NSRect(x: margin + 82, y: yCursor - 2, width: 130, height: 20)
+        contentView.addSubview(popup)
+        resizableViews.append(popup)
+
+        popupHandlers[ObjectIdentifier(popup)] = { [weak self] value in
+            self?.onBeforeEdit?()
+            set(value)
+        }
+        valueRefreshers.append { [weak popup] in
+            popup?.selectItem(withTitle: get())
+        }
+
+        yCursor += 26
+    }
+
     private func colorRow(_ label: String,
                           get: @escaping () -> NSColor,
                           set: @escaping (NSColor) -> Void) {
@@ -548,6 +586,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
 
     @objc private func checkboxToggled(_ sender: NSButton) {
         toggleHandlers[ObjectIdentifier(sender)]?(sender.state == .on)
+    }
+
+    @objc private func popupChanged(_ sender: NSPopUpButton) {
+        popupHandlers[ObjectIdentifier(sender)]?(sender.titleOfSelectedItem ?? "")
     }
 
     @objc private func colorChanged(_ sender: NSColorWell) {

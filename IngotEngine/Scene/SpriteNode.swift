@@ -41,6 +41,19 @@ class SpriteNode: Node {
 
     // MARK: - Named animation playback (AnimationLibrary clips)
 
+    /// Loads a texture for an asset file name. Injected by the platform
+    /// shell (editor / exported game) so clip playback can swap sprite
+    /// sheets without the engine knowing about GPUs. nil in headless
+    /// runs — playback still updates textureName and UVs.
+    static var textureResolver: ((String) -> MTLTexture?)?
+
+    /// The animation character this sprite embodies (e.g. "Player").
+    /// Clip lookups resolve within this character FIRST, so scripts on
+    /// an attached sprite can just call playAnimation("run_left") even
+    /// when other characters define a clip with the same name.
+    /// Serialized with the scene.
+    var characterName: String?
+
     /// The clip that auto-plays when the scene starts (e.g. "idle").
     /// Serialized with the scene.
     var defaultAnimationName: String?
@@ -55,22 +68,55 @@ class SpriteNode: Node {
     }
 
     /// Starts a named clip from the project's AnimationLibrary.
-    /// Restarting the already-playing clip is a no-op (so calling it
-    /// every frame from a script is safe).
+    /// Resolution order: the sprite's attached character's clip
+    /// ("<characterName>/name"), then an exact qualified name
+    /// ("Player/run_left"), then an unambiguous short name. If the
+    /// clip carries its own sprite sheet, the sprite's texture swaps
+    /// to it. Restarting the already-playing clip is a no-op (calling
+    /// this every frame from a script is safe).
     override func playAnimation(_ name: String) {
-        if activeAnimation?.name == name { return }
-        guard let clip = AnimationLibrary.clip(named: name) else {
-            Log.warning("Animation \"\(name)\" not found.")
+        var resolved: AnimationClip?
+        if let characterName, !characterName.isEmpty, !name.contains("/") {
+            resolved = AnimationLibrary.clip(named: "\(characterName)/\(name)")
+        }
+        resolved = resolved ?? AnimationLibrary.clip(named: name)
+
+        guard let clip = resolved else {
+            Log.warning("Animation \"\(name)\" not found\(characterName.map { " (character: \($0))" } ?? "").")
             return
         }
+
+        if let active = activeAnimation,
+           active.qualifiedName == clip.qualifiedName { return }
+
         activeAnimation = clip
         animationElapsed = 0
+
+        // The clip knows its sheet: switch to it so "run_left" always
+        // animates over run_left.png, whatever the sprite showed before.
+        if let sheet = clip.textureName, sheet != textureName {
+            textureName = sheet
+            if let resolved = SpriteNode.textureResolver?(sheet) {
+                texture = resolved
+            }
+        }
     }
 
     /// Stops clip playback, keeping the current frame visible.
     override func stopAnimation() {
         activeAnimation = nil
         animationElapsed = 0
+    }
+
+    /// JS: node.character = "Player" — scopes playAnimation lookups.
+    override var character: String {
+        get { characterName ?? "" }
+        set { characterName = newValue.isEmpty ? nil : newValue }
+    }
+
+    /// JS: if (node.currentAnimation != "run_left") node.playAnimation("run_left")
+    override var currentAnimation: String {
+        activeAnimation?.name ?? ""
     }
 
     override func ready() {

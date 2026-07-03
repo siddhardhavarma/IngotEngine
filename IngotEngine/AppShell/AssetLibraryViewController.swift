@@ -29,7 +29,7 @@ class AssetLibraryViewController: NSViewController,
 
     /// One row in the library.
     private struct AssetItem {
-        enum Kind { case texture, audio, script, prefab, animation }
+        enum Kind { case texture, audio, script, prefab, character, animation }
         let kind: Kind
         let name: String
         let url: URL?          // nil for prefabs/animations (load by name)
@@ -53,6 +53,9 @@ class AssetLibraryViewController: NSViewController,
 
     /// Double-click on an animation clip: open the Animations window.
     var onOpenAnimations: (() -> Void)?
+
+    /// Double-click on a character: attach it to the selected sprite.
+    var onAttachCharacter: ((String) -> Void)?
 
     /// Status/log line (routed to the AI chat history).
     var onLog: ((String) -> Void)?
@@ -199,6 +202,12 @@ class AssetLibraryViewController: NSViewController,
         }
 
         if filter == 0 || filter == 5 {
+            // Characters first — attachable to sprites — then their clips.
+            for character in AnimationLibrary.characters() {
+                items.append(AssetItem(kind: .character, name: character,
+                                       url: nil,
+                                       subtitle: "Character — double-click attaches to selection"))
+            }
             for clip in AnimationLibrary.list() {
                 items.append(AssetItem(kind: .animation, name: clip,
                                        url: nil, subtitle: "Animation clip"))
@@ -222,26 +231,60 @@ class AssetLibraryViewController: NSViewController,
 
         let panel = NSOpenPanel()
         panel.title = "Import Assets"
-        panel.message = "Images (png/jpg) and audio (wav/mp3) are copied into the project's Assets folder."
+        panel.message = "Pick files OR whole folders — images (png/jpg) and audio (wav/mp3) inside are copied into the project's Assets folder."
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.png, .jpeg, .wav, .mp3, .audio]
 
         panel.beginSheetModal(for: view.window!) { [weak self] response in
             guard let self, response == .OK else { return }
 
             var imported = 0
+            var skipped = 0
             for source in panel.urls {
-                let dest = assetsDir.appendingPathComponent(source.lastPathComponent)
-                try? FileManager.default.removeItem(at: dest)
-                if (try? FileManager.default.copyItem(at: source, to: dest)) != nil {
-                    imported += 1
-                }
+                self.importItem(at: source, into: assetsDir,
+                                imported: &imported, skipped: &skipped)
             }
 
-            self.onLog?("Imported \(imported) asset\(imported == 1 ? "" : "s").")
+            var message = "Imported \(imported) asset\(imported == 1 ? "" : "s")."
+            if skipped > 0 {
+                message += " Skipped \(skipped) unsupported file\(skipped == 1 ? "" : "s")."
+            }
+            self.onLog?(message)
             self.refresh()
+        }
+    }
+
+    /// Copies a file into Assets/, or recurses through a folder copying
+    /// every supported file inside it (flattened — the engine resolves
+    /// assets by file name).
+    private func importItem(at url: URL, into assetsDir: URL,
+                            imported: inout Int, skipped: inout Int) {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return }
+
+        if isDirectory.boolValue {
+            guard let children = try? fm.contentsOfDirectory(at: url,
+                                                             includingPropertiesForKeys: nil,
+                                                             options: .skipsHiddenFiles) else { return }
+            for child in children {
+                importItem(at: child, into: assetsDir,
+                           imported: &imported, skipped: &skipped)
+            }
+            return
+        }
+
+        let ext = url.pathExtension.lowercased()
+        guard Self.imageExtensions.contains(ext) || Self.audioExtensions.contains(ext) else {
+            skipped += 1
+            return
+        }
+
+        let dest = assetsDir.appendingPathComponent(url.lastPathComponent)
+        try? fm.removeItem(at: dest)
+        if (try? fm.copyItem(at: url, to: dest)) != nil {
+            imported += 1
         }
     }
 
@@ -261,6 +304,8 @@ class AssetLibraryViewController: NSViewController,
             onOpenScript?(item.name)
         case .prefab:
             onPlacePrefab?(item.name)
+        case .character:
+            onAttachCharacter?(item.name)
         case .animation:
             onOpenAnimations?()
         }
@@ -303,6 +348,9 @@ class AssetLibraryViewController: NSViewController,
         case .prefab:
             thumb.image = NSImage(systemSymbolName: "shippingbox", accessibilityDescription: nil)
             thumb.contentTintColor = .systemOrange
+        case .character:
+            thumb.image = NSImage(systemSymbolName: "person.fill", accessibilityDescription: nil)
+            thumb.contentTintColor = .systemPink
         case .animation:
             thumb.image = NSImage(systemSymbolName: "figure.walk.motion", accessibilityDescription: nil)
             thumb.contentTintColor = .systemGreen

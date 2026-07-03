@@ -72,7 +72,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `FrameAnimation.swift` | Grid-based sprite sheet animation. `AnimationBehavior` drives frame cycling on SpriteNodes. |
 | `AssetHandle.swift` | Type-safe `AssetHandle<T>` with string IDs. Phantom types: `TextureAsset`, `SoundAsset`. |
 | `Log.swift` | Leveled logging (debug/info/warning/error) with optional editor chat sink. |
-| `AnimationLibrary.swift` | Named sprite animations (Godot SpriteFrames-ish): `AnimationClip` (grid, frame range, fps, loop) stored per project in animations.json. Played via `node.playAnimation("walk")` (JS), the playAnimation rule action, AI commands, or a sprite's auto-playing `defaultAnimationName`. |
+| `AnimationLibrary.swift` | Character-based sprite animations (Godot SpriteFrames-ish): `AnimationClip` (character, own sprite-sheet `textureName`, grid, frame range, fps, loop) stored per project in animations.json, keyed by "Character/clip". Playing a clip SWAPS the sprite's texture to the clip's sheet (via `SpriteNode.textureResolver`, injected by the shell). Played via `node.playAnimation("run_left")` / `("Player/run_left")` (JS), the playAnimation rule action, AI commands, or a sprite's auto-playing `defaultAnimationName`. |
 | `Node+JSExport.swift` | JSExport bridge: x, y, rotationDegrees, scaleX/Y, zIndexJS, visible, name, jsZoom, setFrame(), getChild(), emitSignal(), setVelocity(), spawn(prefab,x,y), destroy(). |
 | `AIConfiguration.swift` | `AIProvider` enum + `AISettings` struct: provider, per-provider model IDs (user-editable), API keys. `load()`/`save()` persist preferences to UserDefaults and keys to the Keychain. |
 
@@ -146,10 +146,10 @@ State model (Godot-style — manual Save is never *required*):
 | File | What it does |
 |------|-------------|
 | `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
-| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… copies png/jpg/wav/mp3 into Assets/, list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window. |
+| `AssetLibraryViewController.swift` | Left-dock asset hub: Import… accepts files AND folders (recursed, flattened) and copies png/jpg/wav/mp3 into Assets/; list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
-| `AnimationEditorViewController.swift` | The Animations window (toolbar button): clip list with +/−, grid/frame-range/fps/loop fields, and a live preview that plays frames from any Asset Library image. Saves to animations.json. |
+| `AnimationEditorViewController.swift` | The Animations window (toolbar button), character-based: character popup + New Character…, the selected character's clips (+/−), per-clip fields incl. its OWN sprite sheet, and a live preview playing from that sheet. Saves to animations.json. |
 | `ProjectSettingsViewController.swift` | Project sheet (gear toolbar button): game name, design resolution, entry scene picker — writes project.json. |
 | `EditorViewController.swift` | NSSplitViewController root building the three-column layout above. Owns Engine, wires all panels. Toolbar: Save, Scenes ▾ (switch scene — auto-saves the one you leave — plus New Scene…), Play/Stop, ✦ AI Settings, Export. Manages undo (snapshot-based), AI prompt dispatch, the project texture cache (loads Assets/ files by `textureName` on scene load), asset assignment, prefab placement, tile-paint wiring, runtime scene-loader wiring. |
 | `ViewportViewController.swift` | MTKView host. Flattens the scene (sprites + tiles + particles) into RenderInstances, sorts by zIndex (stable), and draws per-texture instanced batches with `baseInstance` — multi-texture rendering in few draw calls. Design-mode editor camera: scroll pans, pinch zooms, Cmd+0 resets to the game camera (Play mode always uses the game camera + shake). Forwards keyboard to InputManager, handles mouse picking + drag-to-move with undo integration, and tile painting (left = paint, right = erase). |
@@ -184,10 +184,14 @@ var Script = {
 };
 ```
 The JS file is parsed ONCE. Each frame calls the compiled `update` function.
-Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
+Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `character` (get/set), `currentAnimation`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
+A sprite with a `character` attached resolves `playAnimation("run_left")` within that character's clips (and swaps to the clip's own sheet); `playAnimation` is a no-op when the clip is already playing, so driving animations from `update()` every frame is the idiomatic pattern.
 
-### Animation Workflow
-Create clips in the Animations window (toolbar) — sprite-sheet grid, frame range, fps, loop, with live preview from any Asset Library image. Clips live in animations.json and travel into exports. Play them from JS (`node.playAnimation("walk")`), rules (playAnimation action), AI (`defineAnimation`/`setDefaultAnimation`/`playAnimation`), or auto-play via the sprite's Animation field in the inspector.
+### Character Attachment (sprite ↔ animation set)
+`SpriteNode.characterName` binds a sprite to a character's clip set: attach via the Inspector's Character dropdown, double-clicking the character in the Asset Library (Animations filter), or the AI's `setCharacter`. Attachment scopes script lookups to that character and auto-plays its "idle" clip on scene start (when one exists and no default is set). Serialized with the scene.
+
+### Animation Workflow (character-based)
+In the Animations window: New Character… ("Player"), then define each clip it performs (idle_up, run_left, …) with its OWN sprite sheet, grid, frame range, fps, loop — live preview plays from the clip's sheet. Because the sheet is saved on the clip, `node.playAnimation("run_left")` swaps the sprite's texture to run_left.png automatically (use "Player/run_left" if two characters share a clip name). Clips live in animations.json and travel into exports. Play from JS, rules (playAnimation action), AI (`defineAnimation` with character/textureName, `setDefaultAnimation`, `playAnimation`), or auto-play via the sprite's Animation field.
 
 ### AI Conversation Memory
 The copilot sends a rolling window of the last few exchanges ("User: …" / "Executed: …") with each prompt, so follow-ups like "make it bigger" resolve against what was just built.
