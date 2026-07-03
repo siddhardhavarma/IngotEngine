@@ -209,6 +209,11 @@ class EditorViewController: NSSplitViewController {
             self?.eventSheet.targetNode = node
             self?.chatPanel.setContext(node.map { "Selected: \($0.name)" } ?? "No selection — commands target the whole scene")
         }
+        // The viewport draws a selection outline around whatever the
+        // inspector currently targets (single source of truth).
+        viewport.selectedNodeProvider = { [weak self] in
+            self?.inspector.selectedNode
+        }
         viewport.onNodeDragMoved = { [weak self] in
             self?.inspector.refreshUI()
         }

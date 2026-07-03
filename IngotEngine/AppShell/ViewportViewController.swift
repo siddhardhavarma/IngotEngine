@@ -71,7 +71,7 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
     // --- Mouse picking / dragging state ---
 
-    private var draggedNode: SpriteNode?
+    private var draggedNode: Node?
     private var dragOffset = simd_float2(0, 0)
     private var lastVisibleSprites: [SpriteNode] = []
 
@@ -83,8 +83,34 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     // takes over. Scroll pans, pinch zooms, Cmd+0 resets.
 
     private var editorCenter = simd_float2(0, 0)
-    private var editorZoom: Float = 1
+    private var editorZoom: Float = 1 {
+        didSet { updateZoomLabel() }
+    }
     private var editorViewInitialized = false
+
+    // --- Editor overlay: grid, snapping, gizmos (design mode only) ---
+
+    private static let gridVisibleKey = "IngotViewportGridVisible"
+    private static let snapKey = "IngotViewportSnapEnabled"
+    private static let gridSizeKey = "IngotViewportGridSize"
+
+    private var showGrid = true
+    private var snapToGrid = false
+    private var gridSize: Float = 32
+
+    /// 1×1 white texture tinted per-instance — grid lines, gizmo
+    /// outlines, and selection highlights are all thin quads.
+    private var whiteTexture: MTLTexture!
+
+    /// Asks the editor shell which node is selected, so the viewport
+    /// can draw a selection outline without owning selection state.
+    var selectedNodeProvider: (() -> Node?)?
+
+    // --- Overlay HUD bar (grid/snap/zoom controls) ---
+
+    private var overlayBar: NSVisualEffectView!
+    private var zoomLabel: NSTextField!
+    private var coordsLabel: NSTextField!
 
     /// Re-centers the editor view on the game camera (or design center).
     func resetEditorView() {
@@ -125,7 +151,7 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
     // --- Callbacks to the editor shell ---
 
-    var onNodePicked: ((SpriteNode?) -> Void)?
+    var onNodePicked: ((Node?) -> Void)?
     var onNodeDragMoved: (() -> Void)?
     var onDragWillBegin: (() -> Void)?
 
@@ -164,11 +190,43 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
 
         buildPipeline(for: metalView)
         loadTexture()
+        makeWhiteTexture()
 
         makeInstanceBuffer(capacity: instanceCapacity)
 
+        loadViewportPreferences()
+        buildOverlayBar()
+
+        // Live world-coordinate readout needs mouseMoved events.
+        view.addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil))
+
         // NOTE: Scene creation has moved to EditorViewController.
         // The viewport only renders what the engine provides.
+    }
+
+    private func makeWhiteTexture() {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
+        descriptor.usage = .shaderRead
+        whiteTexture = device.makeTexture(descriptor: descriptor)
+        var pixel: [UInt8] = [255, 255, 255, 255]
+        whiteTexture.replace(region: MTLRegionMake2D(0, 0, 1, 1),
+                             mipmapLevel: 0, withBytes: &pixel, bytesPerRow: 4)
+    }
+
+    private func loadViewportPreferences() {
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.gridVisibleKey) != nil {
+            showGrid = defaults.bool(forKey: Self.gridVisibleKey)
+        }
+        if defaults.object(forKey: Self.snapKey) != nil {
+            snapToGrid = defaults.bool(forKey: Self.snapKey)
+        }
+        let storedSize = defaults.double(forKey: Self.gridSizeKey)
+        if storedSize > 0 { gridSize = Float(storedSize) }
     }
 
     private func makeInstanceBuffer(capacity: Int) {
@@ -187,6 +245,103 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         var capacity = instanceCapacity
         while capacity < needed { capacity *= 2 }
         makeInstanceBuffer(capacity: capacity)
+    }
+
+    // MARK: - Overlay HUD bar
+
+    /// Floating control strip in the viewport's top-left corner:
+    /// grid + snap toggles, grid size, zoom readout, reset view,
+    /// and the mouse's live world coordinates.
+    private func buildOverlayBar() {
+        let bar = NSVisualEffectView()
+        bar.material = .hudWindow
+        bar.blendingMode = .withinWindow
+        bar.state = .active
+        bar.wantsLayer = true
+        bar.layer?.cornerRadius = 8
+        bar.translatesAutoresizingMaskIntoConstraints = false
+
+        let gridCheck = NSButton(checkboxWithTitle: "Grid", target: self,
+                                 action: #selector(gridToggled(_:)))
+        gridCheck.state = showGrid ? .on : .off
+
+        let snapCheck = NSButton(checkboxWithTitle: "Snap", target: self,
+                                 action: #selector(snapToggled(_:)))
+        snapCheck.state = snapToGrid ? .on : .off
+
+        let sizePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        for size in [8, 16, 32, 64, 128] {
+            sizePopup.addItem(withTitle: "\(size) px")
+            sizePopup.lastItem?.tag = size
+        }
+        if !sizePopup.selectItem(withTag: Int(gridSize)) {
+            _ = sizePopup.selectItem(withTag: 32)
+        }
+        sizePopup.target = self
+        sizePopup.action = #selector(gridSizeChanged(_:))
+
+        zoomLabel = makeBarLabel("100%")
+        coordsLabel = makeBarLabel("x —  y —")
+
+        let resetButton = NSButton(title: "Reset View", target: self,
+                                   action: #selector(resetViewClicked))
+        resetButton.bezelStyle = .accessoryBarAction
+
+        for control in [gridCheck, snapCheck, sizePopup, resetButton] {
+            control.controlSize = .small
+            control.font = .systemFont(ofSize: 11)
+        }
+
+        let stack = NSStackView(views: [gridCheck, snapCheck, sizePopup,
+                                        zoomLabel, resetButton, coordsLabel])
+        stack.orientation = .horizontal
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        bar.addSubview(stack)
+        view.addSubview(bar)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 5),
+            stack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -5),
+            bar.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
+            bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+        ])
+
+        overlayBar = bar
+        updateZoomLabel()
+    }
+
+    private func makeBarLabel(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
+
+    private func updateZoomLabel() {
+        zoomLabel?.stringValue = "\(Int((editorZoom * 100).rounded()))%"
+    }
+
+    @objc private func gridToggled(_ sender: NSButton) {
+        showGrid = sender.state == .on
+        UserDefaults.standard.set(showGrid, forKey: Self.gridVisibleKey)
+    }
+
+    @objc private func snapToggled(_ sender: NSButton) {
+        snapToGrid = sender.state == .on
+        UserDefaults.standard.set(snapToGrid, forKey: Self.snapKey)
+    }
+
+    @objc private func gridSizeChanged(_ sender: NSPopUpButton) {
+        gridSize = Float(max(sender.selectedTag(), 1))
+        UserDefaults.standard.set(Double(gridSize), forKey: Self.gridSizeKey)
+    }
+
+    @objc private func resetViewClicked() {
+        resetEditorView()
+        view.window?.makeFirstResponder(self)
     }
 
     // MARK: - Keyboard input
@@ -264,6 +419,36 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         return nil
     }
 
+    /// Picks nodes that are invisible in the game but drawn as gizmos
+    /// in design mode: camera handles and trigger zones. Sprites get
+    /// first claim (see mouseDown), so a large trigger zone can't
+    /// swallow every click on the sprites inside it.
+    private func pickGizmoNode(at worldPos: simd_float2) -> Node? {
+        guard let root = engine.currentScene?.rootNode else { return nil }
+        var hit: Node?
+        forEachNode(root) { node in
+            var half: simd_float2
+            if node is CameraNode {
+                half = simd_float2(14 / editorZoom, 14 / editorZoom)   // forgiving handle
+            } else if let trigger = node as? CollisionNode {
+                half = trigger.triggerSize / 2
+            } else {
+                return
+            }
+            let p = node.globalTransform.columns.3
+            if abs(worldPos.x - p.x) <= half.x, abs(worldPos.y - p.y) <= half.y {
+                hit = node
+            }
+        }
+        return hit
+    }
+
+    private func forEachNode(_ node: Node, _ visit: (Node) -> Void) {
+        guard node.isEnabled else { return }
+        visit(node)
+        for child in node.children { forEachNode(child, visit) }
+    }
+
     // MARK: - Tile painting
 
     /// Converts a world position to the paint target's tile grid and
@@ -318,7 +503,10 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         }
 
         let worldPos = convertToWorldSpace(event: event)
-        let hitNode = pickNode(at: worldPos)
+        var hitNode: Node? = pickNode(at: worldPos)
+        if hitNode == nil, !engine.isPlaying {
+            hitNode = pickGizmoNode(at: worldPos)
+        }
 
         onNodePicked?(hitNode)
 
@@ -344,8 +532,17 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         guard let node = draggedNode else { return }
 
         let worldPos = convertToWorldSpace(event: event)
-        node.position.x = worldPos.x - dragOffset.x
-        node.position.y = worldPos.y - dragOffset.y
+        var newX = worldPos.x - dragOffset.x
+        var newY = worldPos.y - dragOffset.y
+
+        if snapToGrid, !engine.isPlaying {
+            let g = max(gridSize, 1)
+            newX = (newX / g).rounded() * g
+            newY = (newY / g).rounded() * g
+        }
+
+        node.position.x = newX
+        node.position.y = newY
 
         onNodeDragMoved?()
     }
@@ -353,6 +550,12 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
     override func mouseUp(with event: NSEvent) {
         draggedNode = nil
         isPaintingStroke = false
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard engine != nil, !engine.isPlaying, coordsLabel != nil else { return }
+        let p = convertToWorldSpace(event: event)
+        coordsLabel.stringValue = String(format: "x %.0f  y %.0f", p.x, p.y)
     }
 
     // MARK: - Pipeline & texture setup
@@ -460,6 +663,141 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         }
     }
 
+    // MARK: - Editor overlay geometry (design mode only)
+
+    /// One tinted quad — grid lines, outlines, and fills are all
+    /// instances of the 1×1 white texture (they batch into a single
+    /// draw call at the end of the frame).
+    private func gizmoQuad(cx: Float, cy: Float, w: Float, h: Float,
+                           color: simd_float4) -> RenderInstance {
+        RenderInstance(
+            modelMatrix: translationMatrix(tx: cx, ty: cy)
+                       * scaleMatrix(sx: w / 100, sy: h / 100),
+            uvRect: simd_float4(0, 0, 1, 1),
+            color: color,
+            texture: whiteTexture,
+            zIndex: 0
+        )
+    }
+
+    private func appendOutline(cx: Float, cy: Float, halfX: Float, halfY: Float,
+                               thickness: Float, color: simd_float4,
+                               into overlay: inout [RenderInstance]) {
+        overlay.append(gizmoQuad(cx: cx, cy: cy + halfY, w: halfX * 2 + thickness, h: thickness, color: color))
+        overlay.append(gizmoQuad(cx: cx, cy: cy - halfY, w: halfX * 2 + thickness, h: thickness, color: color))
+        overlay.append(gizmoQuad(cx: cx - halfX, cy: cy, w: thickness, h: halfY * 2 + thickness, color: color))
+        overlay.append(gizmoQuad(cx: cx + halfX, cy: cy, w: thickness, h: halfY * 2 + thickness, color: color))
+    }
+
+    /// Half-extents of the selection outline for a node, by type.
+    private func gizmoHalfExtents(of node: Node) -> simd_float2 {
+        if let trigger = node as? CollisionNode { return trigger.triggerSize / 2 }
+        if node is CameraNode { return simd_float2(11 / editorZoom, 11 / editorZoom) }
+        if node is SpriteNode {
+            return simd_float2(quadHalfSize * abs(node.scale.x),
+                               quadHalfSize * abs(node.scale.y))
+        }
+        return simd_float2(14 / editorZoom, 14 / editorZoom)
+    }
+
+    /// Grid + axes, camera view-frame gizmo, trigger-zone gizmos, and
+    /// the selection outline. Appended after the z-sorted scene so
+    /// they always draw on top; never built during Play.
+    private func buildEditorOverlay(screenWidth: Float, screenHeight: Float,
+                                    into overlay: inout [RenderInstance]) {
+        let halfW = screenWidth / (2 * editorZoom)
+        let halfH = screenHeight / (2 * editorZoom)
+        let minX = editorCenter.x - halfW
+        let maxX = editorCenter.x + halfW
+        let minY = editorCenter.y - halfH
+        let maxY = editorCenter.y + halfH
+        let px = 1 / editorZoom            // one screen pixel, in world units
+
+        // --- Grid (coarsens as you zoom out: lines stay ≥ 12 px apart) ---
+        if showGrid {
+            var step = max(gridSize, 1)
+            while step * editorZoom < 12 { step *= 2 }
+            let gridColor = simd_float4(1, 1, 1, 0.07)
+
+            var x = (minX / step).rounded(.down) * step
+            while x <= maxX {
+                if abs(x) > step * 0.01 {
+                    overlay.append(gizmoQuad(cx: x, cy: editorCenter.y,
+                                             w: px, h: halfH * 2, color: gridColor))
+                }
+                x += step
+            }
+            var y = (minY / step).rounded(.down) * step
+            while y <= maxY {
+                if abs(y) > step * 0.01 {
+                    overlay.append(gizmoQuad(cx: editorCenter.x, cy: y,
+                                             w: halfW * 2, h: px, color: gridColor))
+                }
+                y += step
+            }
+
+            // World axes, brighter, so the origin is always findable.
+            if minY < 0, maxY > 0 {
+                overlay.append(gizmoQuad(cx: editorCenter.x, cy: 0, w: halfW * 2, h: 2 * px,
+                                         color: simd_float4(0.9, 0.35, 0.35, 0.4)))
+            }
+            if minX < 0, maxX > 0 {
+                overlay.append(gizmoQuad(cx: 0, cy: editorCenter.y, w: 2 * px, h: halfH * 2,
+                                         color: simd_float4(0.35, 0.9, 0.45, 0.4)))
+            }
+        }
+
+        guard let scene = engine.currentScene else { return }
+
+        // --- Node gizmos: camera frames + trigger zones ---
+        let project = ProjectManager.shared.projectFile
+        let designW = Float(project.designWidth)
+        let designH = Float(project.designHeight)
+
+        forEachNode(scene.rootNode) { node in
+            if let camera = node as? CameraNode {
+                let p = camera.globalTransform.columns.3
+                let isActive = camera === scene.activeCamera
+                let orange = simd_float4(1.0, 0.62, 0.15, isActive ? 0.9 : 0.45)
+
+                // The view frame: exactly what the player sees at the
+                // project's design resolution and this camera's zoom.
+                if isActive {
+                    let z = max(camera.zoom, 0.001)
+                    appendOutline(cx: p.x, cy: p.y,
+                                  halfX: designW / (2 * z), halfY: designH / (2 * z),
+                                  thickness: 2 * px, color: orange, into: &overlay)
+                }
+
+                // The grab handle (click to select, drag to move).
+                overlay.append(gizmoQuad(cx: p.x, cy: p.y, w: 22 * px, h: 22 * px,
+                                         color: simd_float4(orange.x, orange.y, orange.z, 0.28)))
+                appendOutline(cx: p.x, cy: p.y, halfX: 11 * px, halfY: 11 * px,
+                              thickness: 1.5 * px, color: orange, into: &overlay)
+            }
+
+            if let trigger = node as? CollisionNode {
+                let p = trigger.globalTransform.columns.3
+                let half = trigger.triggerSize / 2
+                overlay.append(gizmoQuad(cx: p.x, cy: p.y, w: half.x * 2, h: half.y * 2,
+                                         color: simd_float4(0.25, 0.75, 1.0, 0.12)))
+                appendOutline(cx: p.x, cy: p.y, halfX: half.x, halfY: half.y,
+                              thickness: 1.5 * px,
+                              color: simd_float4(0.25, 0.75, 1.0, 0.55), into: &overlay)
+            }
+        }
+
+        // --- Selection outline ---
+        if let selected = selectedNodeProvider?(), selected.isEnabled {
+            let p = selected.globalTransform.columns.3
+            let half = gizmoHalfExtents(of: selected)
+            appendOutline(cx: p.x, cy: p.y,
+                          halfX: half.x + 3 * px, halfY: half.y + 3 * px,
+                          thickness: 2 * px,
+                          color: simd_float4(1.0, 0.9, 0.25, 0.95), into: &overlay)
+        }
+    }
+
     // MARK: - MTKViewDelegate
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
@@ -491,9 +829,20 @@ class ViewportViewController: NSViewController, MTKViewDelegate {
         lastVisibleSprites = visibleSprites
 
         // --- Z-order: stable sort by zIndex (equal z keeps tree order) ---
-        let sorted = instances.enumerated()
+        var sorted = instances.enumerated()
             .sorted { ($0.element.zIndex, $0.offset) < ($1.element.zIndex, $1.offset) }
             .map { $0.element }
+
+        // --- Editor overlay: appended after the sort so grid/gizmos
+        //     always draw on top. Design mode only — Play shows the
+        //     clean game view. ---
+        if overlayBar.isHidden != engine.isPlaying {
+            overlayBar.isHidden = engine.isPlaying
+        }
+        if !engine.isPlaying {
+            buildEditorOverlay(screenWidth: screenWidth, screenHeight: screenHeight,
+                               into: &sorted)
+        }
 
         let instanceCount = sorted.count
         ensureInstanceCapacity(instanceCount)

@@ -244,6 +244,11 @@ class AIEngineBridge {
     Physics notes: bodies with velocity are integrated by the engine;
     world gravity applies unless gravityScale is 0. For a jump: check
     isActionJustPressed then node.setVelocity(currentX, 600).
+
+    Scripts attach to ANY node type — including the camera. A camera
+    script can pan (node.x/node.y) or zoom (node.jsZoom) for cutscenes
+    and manual scrolling; if the camera has a follow target set, the
+    follow runs after the script and wins on position.
     """
 
     /// Generates or rewrites a lifecycle script with full engine

@@ -24,6 +24,34 @@ final class SerializationTests: XCTestCase {
         return SceneDeserializer.deserialize(jsonString: json)
     }
 
+    func testCameraRunsScriptsAndKeepsThemAcrossSaveLoad() {
+        // Scripts are generic Node machinery — a camera is scriptable
+        // like any sprite (e.g. cutscene pans, manual scrolling).
+        ProjectManager.shared.createScriptFile(named: "CameraPan.js", code: """
+        var Script = {
+            start: function(node) {},
+            update: function(node, dt, time) { node.x += 100 * dt; }
+        };
+        """)
+
+        let scene = Scene()
+        let camera = CameraNode()
+        camera.name = "MainCamera"
+        camera.addBehavior(ScriptBehavior(scriptName: "CameraPan.js"))
+        scene.rootNode.addChild(camera)
+        scene.activeCamera = camera
+
+        scene.update(deltaTime: 0.5, input: .shared)
+        XCTAssertEqual(camera.position.x, 50, accuracy: 0.5,
+                       "The script drives the camera during update")
+
+        // The attachment survives a save/load round trip.
+        let root = roundTrip(scene)
+        let restored = root?.findChild(named: "MainCamera") as? CameraNode
+        let script = restored?.behaviors.first(where: { $0 is ScriptBehavior }) as? ScriptBehavior
+        XCTAssertEqual(script?.scriptName, "CameraPan.js")
+    }
+
     func testWorldGravityRoundTripAndEngineApplication() {
         let scene = Scene()
         scene.gravity = simd_float2(0, -980)
