@@ -160,12 +160,19 @@ class SpriteNode: Node {
         animationElapsed += Float(deltaTime)
         let rawFrame = Int(animationElapsed * max(clip.fps, 0.1))
 
+        // Never step past the sheet: a clip whose end frame overshoots
+        // the grid (10 frames but "End Frame 10" — the classic
+        // off-by-one) would sample outside the atlas and flash blank
+        // at the end of every loop.
+        let capacity = max(clip.gridWidth, 1) * max(clip.gridHeight, 1)
+        let available = max(min(clip.frameCount, capacity - clip.startFrame), 1)
+
         let frame: Int
         if clip.loops {
-            frame = rawFrame % clip.frameCount
+            frame = rawFrame % available
         } else {
-            frame = min(rawFrame, clip.frameCount - 1)
-            if rawFrame >= clip.frameCount {
+            frame = min(rawFrame, available - 1)
+            if rawFrame >= available {
                 activeAnimation = nil
             }
         }
