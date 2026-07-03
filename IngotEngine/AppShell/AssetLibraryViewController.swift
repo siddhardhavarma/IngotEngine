@@ -29,10 +29,10 @@ class AssetLibraryViewController: NSViewController,
 
     /// One row in the library.
     private struct AssetItem {
-        enum Kind { case texture, audio, prefab }
+        enum Kind { case texture, audio, script, prefab, animation }
         let kind: Kind
         let name: String
-        let url: URL?          // nil for prefabs (they load by name)
+        let url: URL?          // nil for prefabs/animations (load by name)
         let subtitle: String
     }
 
@@ -44,15 +44,24 @@ class AssetLibraryViewController: NSViewController,
     /// Double-click on an audio file: assign to a selected AudioNode.
     var onAssignAudio: ((String) -> Void)?
 
+    /// Double-click on a script: assign to the selection (if any) and
+    /// open it in the Script Editor.
+    var onOpenScript: ((String) -> Void)?
+
     /// Double-click on a prefab: instantiate it in the scene.
     var onPlacePrefab: ((String) -> Void)?
+
+    /// Double-click on an animation clip: open the Animations window.
+    var onOpenAnimations: (() -> Void)?
 
     /// Status/log line (routed to the AI chat history).
     var onLog: ((String) -> Void)?
 
     private var tableView: NSTableView!
-    private var filterControl: NSSegmentedControl!
+    private var filterPopup: NSPopUpButton!
     private var items: [AssetItem] = []
+
+    private let filterTitles = ["All", "Art", "Audio", "Scripts", "Prefabs", "Animations"]
 
     // MARK: - Layout
 
@@ -72,14 +81,13 @@ class AssetLibraryViewController: NSViewController,
         header.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(header)
 
-        filterControl = NSSegmentedControl(labels: ["All", "Art", "Audio", "Prefabs"],
-                                           trackingMode: .selectOne,
-                                           target: self,
-                                           action: #selector(filterChanged))
-        filterControl.controlSize = .small
-        filterControl.selectedSegment = 0
-        filterControl.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(filterControl)
+        filterPopup = NSPopUpButton()
+        filterPopup.addItems(withTitles: filterTitles)
+        filterPopup.controlSize = .small
+        filterPopup.target = self
+        filterPopup.action = #selector(filterChanged)
+        filterPopup.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(filterPopup)
 
         tableView = NSTableView()
         tableView.dataSource = self
@@ -122,11 +130,11 @@ class AssetLibraryViewController: NSViewController,
             header.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
 
-            filterControl.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
-            filterControl.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            filterControl.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+            filterPopup.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
+            filterPopup.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            filterPopup.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
 
-            scrollView.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 6),
+            scrollView.topAnchor.constraint(equalTo: filterPopup.bottomAnchor, constant: 6),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -149,13 +157,13 @@ class AssetLibraryViewController: NSViewController,
     private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg"]
     private static let audioExtensions: Set<String> = ["wav", "mp3", "aac", "m4a"]
 
-    /// Re-reads Assets/ and Prefabs/ from disk.
+    /// Re-reads Assets/, Scripts/, Prefabs/, and the animation library.
     func refresh() {
         guard isViewLoaded else { return }
         items.removeAll()
 
         let fm = FileManager.default
-        let filter = filterControl.selectedSegment
+        let filter = filterPopup.indexOfSelectedItem
 
         if let assetsDir = ProjectManager.shared.assetsURL,
            let files = try? fm.contentsOfDirectory(at: assetsDir,
@@ -177,9 +185,23 @@ class AssetLibraryViewController: NSViewController,
         }
 
         if filter == 0 || filter == 3 {
+            for script in ProjectManager.shared.listScripts() {
+                items.append(AssetItem(kind: .script, name: script,
+                                       url: nil, subtitle: "Script — double-click to edit/assign"))
+            }
+        }
+
+        if filter == 0 || filter == 4 {
             for prefab in PrefabLibrary.list() {
                 items.append(AssetItem(kind: .prefab, name: prefab,
                                        url: nil, subtitle: "Prefab"))
+            }
+        }
+
+        if filter == 0 || filter == 5 {
+            for clip in AnimationLibrary.list() {
+                items.append(AssetItem(kind: .animation, name: clip,
+                                       url: nil, subtitle: "Animation clip"))
             }
         }
 
@@ -235,8 +257,12 @@ class AssetLibraryViewController: NSViewController,
             if let url = item.url { onAssignTexture?(url) }
         case .audio:
             onAssignAudio?(item.name)
+        case .script:
+            onOpenScript?(item.name)
         case .prefab:
             onPlacePrefab?(item.name)
+        case .animation:
+            onOpenAnimations?()
         }
     }
 
@@ -271,9 +297,15 @@ class AssetLibraryViewController: NSViewController,
         case .audio:
             thumb.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: nil)
             thumb.contentTintColor = .systemTeal
+        case .script:
+            thumb.image = NSImage(systemSymbolName: "curlybraces", accessibilityDescription: nil)
+            thumb.contentTintColor = .systemPurple
         case .prefab:
             thumb.image = NSImage(systemSymbolName: "shippingbox", accessibilityDescription: nil)
             thumb.contentTintColor = .systemOrange
+        case .animation:
+            thumb.image = NSImage(systemSymbolName: "figure.walk.motion", accessibilityDescription: nil)
+            thumb.contentTintColor = .systemGreen
         }
 
         let nameLabel = NSTextField(labelWithString: item.name)

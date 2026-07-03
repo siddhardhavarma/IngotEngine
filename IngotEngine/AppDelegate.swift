@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var launcherWindow: NSWindow?
     var editorWindow: NSWindow?
+    private weak var editor: EditorViewController?
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         showProjectLauncher()
@@ -92,6 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let editorVC = EditorViewController()
         window.contentViewController = editorVC
+        editor = editorVC
 
         // Build the toolbar.
         let toolbar = NSToolbar(identifier: "IngotToolbar")
@@ -106,7 +108,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editorWindow = window
     }
 
-    func applicationWillTerminate(_ aNotification: Notification) {}
+    func applicationWillTerminate(_ aNotification: Notification) {
+        // Quitting never loses work: the open scene and project
+        // manifest are written before the process exits.
+        editor?.persistSession()
+    }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         return true

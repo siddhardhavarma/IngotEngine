@@ -23,6 +23,11 @@ struct ProjectFile: Codable {
     /// The scene file loaded when the game starts (e.g., "MainScene").
     var entryScene: String = "MainScene"
 
+    /// The scene that was open in the editor last session — the editor
+    /// reopens it on launch (Godot-style session restore). Optional so
+    /// project.json files written before this field decode cleanly.
+    var lastOpenedScene: String?
+
     /// Target screen resolution (the "design size" for the game).
     var designWidth: Int = 800
     var designHeight: Int = 600

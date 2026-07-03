@@ -54,6 +54,10 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
     /// Fired after "Save as Prefab" succeeds, with the prefab name.
     var onPrefabSaved: ((String) -> Void)?
 
+    /// Fired when the user wants to edit the node's script — the
+    /// editor opens it in the Script Editor tab.
+    var onEditScript: ((String) -> Void)?
+
     var selectedNode: Node? {
         didSet { rebuildForm() }
     }
@@ -385,6 +389,12 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
         buttonRow("Assign", secondTitle: "Create",
                   action: { [weak self] in self?.assignScript(create: false) },
                   secondAction: { [weak self] in self?.assignScript(create: true) })
+        buttonRow("Edit Script") { [weak self] in
+            guard let self, let field = self.scriptNameField else { return }
+            let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { return }
+            self.onEditScript?(name.hasSuffix(".js") ? name : name + ".js")
+        }
     }
 
     // MARK: - Row builders (frame-based, top-to-bottom)

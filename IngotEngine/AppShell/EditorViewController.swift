@@ -26,12 +26,13 @@ import MetalKit
 
 // MARK: - Toolbar item identifiers
 private extension NSToolbarItem.Identifier {
-    static let playStop   = NSToolbarItem.Identifier("PlayStop")
-    static let save       = NSToolbarItem.Identifier("Save")
-    static let scenes     = NSToolbarItem.Identifier("Scenes")
-    static let animations = NSToolbarItem.Identifier("Animations")
-    static let export     = NSToolbarItem.Identifier("Export")
-    static let aiSettings = NSToolbarItem.Identifier("AISettings")
+    static let playStop        = NSToolbarItem.Identifier("PlayStop")
+    static let save            = NSToolbarItem.Identifier("Save")
+    static let scenes          = NSToolbarItem.Identifier("Scenes")
+    static let animations      = NSToolbarItem.Identifier("Animations")
+    static let projectSettings = NSToolbarItem.Identifier("ProjectSettings")
+    static let export          = NSToolbarItem.Identifier("Export")
+    static let aiSettings      = NSToolbarItem.Identifier("AISettings")
 }
 
 class EditorViewController: NSSplitViewController {
@@ -46,6 +47,7 @@ class EditorViewController: NSSplitViewController {
     private var chatPanel: ChatPanelViewController!
     private var eventSheet: EventSheetViewController!
     private var scriptEditor: ScriptEditorViewController!
+    private var logicTabs: NSTabViewController!
 
     private let aiBridge = AIEngineBridge()
 
@@ -108,7 +110,7 @@ class EditorViewController: NSSplitViewController {
         viewportItem.minimumThickness = 320
         centerColumn.addSplitViewItem(viewportItem)
 
-        let logicTabs = NSTabViewController()
+        logicTabs = NSTabViewController()
         logicTabs.tabStyle = .segmentedControlOnTop
 
         eventSheet = EventSheetViewController()
@@ -234,15 +236,56 @@ class EditorViewController: NSSplitViewController {
         assetLibrary.onPlacePrefab = { [weak self] name in
             self?.placePrefab(named: name)
         }
+        assetLibrary.onOpenScript = { [weak self] name in
+            self?.openScript(named: name, assignToSelection: true)
+        }
+        assetLibrary.onOpenAnimations = { [weak self] in
+            self?.toolbarAnimations()
+        }
+
+        inspector.onEditScript = { [weak self] name in
+            self?.openScript(named: name, assignToSelection: false)
+        }
+    }
+
+    /// Opens a script in the Script Editor tab; optionally assigns it
+    /// to the selected node first (the Asset Library double-click flow).
+    private func openScript(named name: String, assignToSelection: Bool) {
+        if assignToSelection, let node = inspector.selectedNode {
+            registerUndoSnapshot()
+            node.removeBehaviors { $0 is ScriptBehavior }
+            node.addBehavior(ScriptBehavior(scriptName: name))
+            inspector.refreshUI()
+            chatPanel.appendToHistory("Script \"\(name)\" → \"\(node.name)\".")
+        }
+        scriptEditor.openScript(named: name)
+        // Bring the Script Editor tab forward.
+        logicTabs.selectedTabViewItemIndex = 1
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
 
+        // --- Session restore (Godot-style) ---
+        // Reopen the scene from last session; fall back to the entry
+        // scene; only build the demo for a brand-new project — and
+        // save it immediately so the project always has a scene file.
         if engine.currentScene == nil {
-            let demoScene = DemoScene()
-            demoScene.setup(texture: viewport.texture)
-            engine.currentScene = demoScene
+            let projectFile = ProjectManager.shared.projectFile
+            let startScene = projectFile.lastOpenedScene ?? projectFile.entryScene
+
+            if ProjectManager.shared.listScenes().contains(startScene) {
+                switchToScene(named: startScene, savingCurrent: false)
+            } else if let firstScene = ProjectManager.shared.listScenes().first {
+                switchToScene(named: firstScene, savingCurrent: false)
+            } else {
+                let demoScene = DemoScene()
+                demoScene.setup(texture: viewport.texture)
+                engine.currentScene = demoScene
+                currentSceneName = projectFile.entryScene
+                ProjectManager.shared.saveScene(demoScene, named: currentSceneName)
+                rememberOpenScene()
+            }
         }
 
         if let sceneRoot = engine.currentScene?.rootNode {
@@ -384,6 +427,25 @@ class EditorViewController: NSSplitViewController {
         chatPanel.appendToHistory("Placed prefab \"\(name)\" at (400, 300).")
     }
 
+    // MARK: - Session persistence
+
+    /// Records the open scene in project.json so the next launch
+    /// restores it.
+    private func rememberOpenScene() {
+        ProjectManager.shared.projectFile.lastOpenedScene = currentSceneName
+        ProjectManager.shared.saveProjectFile()
+    }
+
+    /// Saves everything that represents session state: the open scene
+    /// and the project manifest. Called on Play, on quit, and when
+    /// leaving a scene — pressing Save by hand is never *required*.
+    func persistSession() {
+        if let scene = engine.currentScene {
+            ProjectManager.shared.saveScene(scene, named: currentSceneName)
+        }
+        rememberOpenScene()
+    }
+
     // MARK: - Play / Stop
 
     private func togglePlay() {
@@ -394,6 +456,8 @@ class EditorViewController: NSSplitViewController {
         if engine.isPlaying, let scene = engine.currentScene {
             engine.physicsWorld.removeAllBodies()
             scene.registerPhysicsBodies(with: engine.physicsWorld)
+            // Godot-style save-on-run: pressing Play never loses work.
+            persistSession()
         }
 
         sidebar.updatePlayButton(isPlaying: engine.isPlaying)
@@ -444,6 +508,7 @@ class EditorViewController: NSSplitViewController {
 
         engine.currentScene = scene
         currentSceneName = name
+        rememberOpenScene()
         sidebar.rootNode = result.rootNode
         inspector.selectedNode = nil
         eventSheet.targetNode = nil
@@ -482,6 +547,7 @@ class EditorViewController: NSSplitViewController {
 
         engine.currentScene = scene
         currentSceneName = name
+        rememberOpenScene()
         sidebar.rootNode = scene.rootNode
         inspector.selectedNode = nil
         eventSheet.targetNode = nil
@@ -633,11 +699,12 @@ class EditorViewController: NSSplitViewController {
 extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.playStop, .flexibleSpace, .save, .scenes, .animations, .export, .aiSettings]
+        [.playStop, .flexibleSpace, .save, .scenes, .animations, .projectSettings, .export, .aiSettings]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace, .aiSettings, .export]
+        [.save, .scenes, .animations, .flexibleSpace, .playStop, .flexibleSpace,
+         .projectSettings, .aiSettings, .export]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -690,6 +757,15 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
             item.toolTip = "Export to iPhone / iPad / Apple TV"
             item.target = self
             item.action = #selector(toolbarExport)
+            return item
+
+        case .projectSettings:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Project Settings")
+            item.label = "Project"
+            item.toolTip = "Game name, design resolution, entry scene"
+            item.target = self
+            item.action = #selector(toolbarProjectSettings)
             return item
 
         case .aiSettings:
@@ -771,6 +847,17 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
         window.makeKeyAndOrderFront(nil)
 
         animationWindow = window
+    }
+
+    @objc private func toolbarProjectSettings() {
+        let sheet = ProjectSettingsViewController()
+        sheet.onSaved = { [weak self] in
+            guard let self else { return }
+            let projectFile = ProjectManager.shared.projectFile
+            self.view.window?.title = "Ingot Engine — \(projectFile.gameName) — \(self.currentSceneName)"
+            self.chatPanel.appendToHistory("Project settings saved (\(projectFile.gameName), \(projectFile.designWidth)×\(projectFile.designHeight), entry: \(projectFile.entryScene)).")
+        }
+        presentAsSheet(sheet)
     }
 
     @objc private func toolbarAISettings() {
