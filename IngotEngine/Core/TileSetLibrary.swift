@@ -39,6 +39,13 @@ struct TileSetDefinition: Codable, Equatable {
 
     /// Atlas indices that produce static colliders when painted.
     var solidTiles: [Int] = []
+
+    /// Named tile groups ("Ground", "Hazards", "Decor") that organize
+    /// a big atlas — the way a character groups its animation clips.
+    /// Purely editorial: the editor and palette color-code them; the
+    /// engine only cares about solidTiles. Optional so old
+    /// tilesets.json files decode cleanly.
+    var categories: [String: [Int]]?
 }
 
 /// Project-wide tile set storage (mirrors AnimationLibrary's shape).

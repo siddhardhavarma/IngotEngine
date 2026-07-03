@@ -5,22 +5,28 @@
 //  §5.8 — The Tile Set editor (its own window, like Animations).
 //
 //  A tile set bundles everything a tile map needs: the atlas image,
-//  its grid, the world size of one tile, and which tiles are solid.
-//  The atlas preview is visual — click cells to toggle SOLID instead
-//  of typing indices. Saved sets live in tilesets.json and apply to
-//  any TileMapNode from the Inspector's Tile Set popup, the Asset
-//  Library (double-click), or the AI (configureTileMap + "tileSet").
+//  its grid, the world size of one tile, which tiles are solid, and
+//  named CATEGORIES that group tiles ("Ground", "Hazards", "Decor")
+//  the way a character groups its animation clips.
+//
+//  The workflow is visual: pick the atlas and enter the tile size —
+//  the grid (cols × rows) is computed from the image's pixel size
+//  automatically — then choose what clicking assigns (Solid or a
+//  category) and click cells in the preview. Saved sets live in
+//  tilesets.json and apply to any TileMapNode from the Inspector's
+//  Tile Set popup, the Asset Library (double-click), or the AI
+//  (configureTileMap + "tileSet").
 //
 //    Left:  saved tile sets (+/−)
-//    Right: atlas + grid + tile size fields, and the clickable
-//           atlas preview marking solid tiles
+//    Right: atlas + tile size (grid auto-computed), the "click
+//           assigns" target, and the clickable atlas preview
 //
 
 import Cocoa
 
 // ---------------------------------------------------------------------------
 // TileAtlasView — a clickable atlas grid, shared by this editor (mark
-// solid tiles) and the Inspector's paint palette (pick the paint tile)
+// solid tiles / categories) and the Inspector's paint palette
 // ---------------------------------------------------------------------------
 
 class TileAtlasView: NSView {
@@ -30,18 +36,32 @@ class TileAtlasView: NSView {
     var columns = 4 { didSet { columns = max(columns, 1); needsDisplay = true } }
     var rows = 4 { didSet { rows = max(rows, 1); needsDisplay = true } }
 
-    /// Cells drawn with the red "solid" overlay.
-    var solidTiles: Set<Int> = [] { didSet { needsDisplay = true } }
+    /// Passive markers for orientation (tile index → color): solid
+    /// tiles, category members. Drawn as a light fill + thin border.
+    var overlays: [Int: NSColor] = [:] { didSet { needsDisplay = true } }
 
-    /// true → clicking toggles solidTiles (tile set editor);
-    /// false → clicking picks one index (inspector paint palette).
-    var marksSolidTiles = false
+    /// true → clicking toggles membership in `editingTiles` (the tile
+    /// set editor); false → clicking picks one index (paint palette).
+    var isEditable = false
 
-    var onSolidTilesChanged: ((Set<Int>) -> Void)?
-    var onTilePicked: ((Int) -> Void)?
+    /// The group currently being click-edited, drawn stronger than
+    /// the overlays in `editingColor`.
+    var editingTiles: Set<Int> = [] { didSet { needsDisplay = true } }
+    var editingColor: NSColor = .systemRed { didSet { needsDisplay = true } }
+    var onEditingTilesChanged: ((Set<Int>) -> Void)?
 
     /// Palette mode: the currently picked index (-1 = none).
     var selectedIndex = -1 { didSet { needsDisplay = true } }
+    var onTilePicked: ((Int) -> Void)?
+
+    /// A stable color per category slot (used by the editor and the
+    /// Inspector palette so both show the same hues).
+    static func categoryColor(_ index: Int) -> NSColor {
+        let palette: [NSColor] = [.systemOrange, .systemGreen, .systemBlue,
+                                  .systemPurple, .systemPink, .systemTeal,
+                                  .systemYellow, .systemBrown]
+        return palette[index % palette.count]
+    }
 
     /// Flipped so cell (0, 0) — atlas index 0 — is the TOP-left,
     /// matching TileMapNode.uvRect's index math.
@@ -76,19 +96,30 @@ class TileAtlasView: NSView {
             line.stroke()
         }
 
-        // Solid markers.
-        for index in solidTiles where index >= 0 && index < columns * rows {
+        // Passive overlays (dimmer).
+        for (index, color) in overlays where index >= 0 && index < columns * rows {
             let rect = cellRect(index: index, cellW: cellW, cellH: cellH)
-            NSColor.systemRed.withAlphaComponent(0.28).setFill()
+            color.withAlphaComponent(0.16).setFill()
             rect.fill(using: .sourceOver)
-            NSColor.systemRed.withAlphaComponent(0.85).setStroke()
+            color.withAlphaComponent(0.6).setStroke()
+            let border = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
+            border.lineWidth = 1
+            border.stroke()
+        }
+
+        // The actively edited group (stronger).
+        for index in editingTiles where index >= 0 && index < columns * rows {
+            let rect = cellRect(index: index, cellW: cellW, cellH: cellH)
+            editingColor.withAlphaComponent(0.3).setFill()
+            rect.fill(using: .sourceOver)
+            editingColor.withAlphaComponent(0.9).setStroke()
             let border = NSBezierPath(rect: rect.insetBy(dx: 1, dy: 1))
             border.lineWidth = 1.5
             border.stroke()
         }
 
         // Palette selection.
-        if !marksSolidTiles, selectedIndex >= 0, selectedIndex < columns * rows {
+        if !isEditable, selectedIndex >= 0, selectedIndex < columns * rows {
             let rect = cellRect(index: selectedIndex, cellW: cellW, cellH: cellH)
             NSColor.systemYellow.setStroke()
             let border = NSBezierPath(rect: rect.insetBy(dx: 1.5, dy: 1.5))
@@ -111,13 +142,13 @@ class TileAtlasView: NSView {
         guard column >= 0, column < columns, row >= 0, row < rows else { return }
         let index = row * columns + column
 
-        if marksSolidTiles {
-            if solidTiles.contains(index) {
-                solidTiles.remove(index)
+        if isEditable {
+            if editingTiles.contains(index) {
+                editingTiles.remove(index)
             } else {
-                solidTiles.insert(index)
+                editingTiles.insert(index)
             }
-            onSolidTilesChanged?(solidTiles)
+            onEditingTilesChanged?(editingTiles)
         } else {
             selectedIndex = index
             onTilePicked?(index)
@@ -149,17 +180,32 @@ class TileSetEditorViewController: NSViewController,
     private var tileHeightField: NSTextField!
     private var columnsField: NSTextField!
     private var rowsField: NSTextField!
+    private var markTargetPopup: NSPopUpButton!
     private var statusLabel: NSTextField!
 
     // --- Atlas preview ---
     private var atlasView: TileAtlasView!
     private var atlasHeightConstraint: NSLayoutConstraint!
-    private let atlasWidth: CGFloat = 300
+    private let atlasWidth: CGFloat = 440
+
+    /// The atlas image's true pixel size (for grid auto-compute).
+    private var atlasPixelSize: (width: Int, height: Int)?
+
+    // --- Marker state (what clicking assigns) ---
+
+    /// Tiles marked solid (collision).
+    private var solidTiles: Set<Int> = []
+
+    /// Named tile groups, edited in place and saved with the set.
+    private var categories: [String: Set<Int>] = [:]
+
+    /// nil = clicking marks Solid; otherwise the category being edited.
+    private var activeCategory: String?
 
     // MARK: - Layout
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 520))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 780, height: 620))
     }
 
     override func viewDidLoad() {
@@ -223,36 +269,43 @@ class TileSetEditorViewController: NSViewController,
         atlasPopup.target = self
         atlasPopup.action = #selector(atlasChanged)
 
-        tileWidthField = field("32")
-        tileHeightField = field("32")
+        tileWidthField = field("16")
+        tileHeightField = field("16")
         columnsField = field("16")
         rowsField = field("16")
 
-        let grid = NSGridView(views: [
+        let gridHint = NSTextField(labelWithString: "(computed from the image ÷ tile size — override if needed)")
+        gridHint.font = NSFont.systemFont(ofSize: 9)
+        gridHint.textColor = .tertiaryLabelColor
+
+        markTargetPopup = NSPopUpButton()
+        markTargetPopup.controlSize = .small
+        markTargetPopup.target = self
+        markTargetPopup.action = #selector(markTargetChanged)
+
+        let form = NSGridView(views: [
             [label("Name"), nameField],
             [label("Atlas Image"), atlasPopup],
             [label("Tile W (px)"), tileWidthField],
             [label("Tile H (px)"), tileHeightField],
             [label("Atlas Cols"), columnsField],
             [label("Atlas Rows"), rowsField],
+            [NSGridCell.emptyContentView, gridHint],
+            [label("Click assigns"), markTargetPopup],
         ])
-        grid.rowSpacing = 6
-        grid.columnSpacing = 8
-
-        let solidHint = NSTextField(labelWithString: "Click tiles below to mark them SOLID (they collide).")
-        solidHint.font = NSFont.systemFont(ofSize: 10)
-        solidHint.textColor = .secondaryLabelColor
+        form.rowSpacing = 6
+        form.columnSpacing = 8
 
         atlasView = TileAtlasView()
-        atlasView.marksSolidTiles = true
+        atlasView.isEditable = true
         atlasView.wantsLayer = true
         atlasView.layer?.cornerRadius = 6
         atlasView.translatesAutoresizingMaskIntoConstraints = false
         atlasView.widthAnchor.constraint(equalToConstant: atlasWidth).isActive = true
         atlasHeightConstraint = atlasView.heightAnchor.constraint(equalToConstant: atlasWidth)
         atlasHeightConstraint.isActive = true
-        atlasView.onSolidTilesChanged = { [weak self] solids in
-            self?.statusLabel.stringValue = "\(solids.count) solid tile\(solids.count == 1 ? "" : "s") — Save Tile Set to keep."
+        atlasView.onEditingTilesChanged = { [weak self] tiles in
+            self?.editingTilesChanged(tiles)
         }
 
         let saveButton = NSButton(title: "Save Tile Set", target: self, action: #selector(saveClicked))
@@ -264,7 +317,7 @@ class TileSetEditorViewController: NSViewController,
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
 
-        let rightStack = NSStackView(views: [grid, solidHint, atlasView, saveButton, statusLabel])
+        let rightStack = NSStackView(views: [form, atlasView, saveButton, statusLabel])
         rightStack.orientation = .vertical
         rightStack.alignment = .leading
         rightStack.spacing = 10
@@ -353,7 +406,10 @@ class TileSetEditorViewController: NSViewController,
         tileSet.tileHeight = max(Float(tileHeightField.stringValue) ?? 32, 1)
         tileSet.atlasColumns = max(Int(columnsField.stringValue) ?? 4, 1)
         tileSet.atlasRows = max(Int(rowsField.stringValue) ?? 4, 1)
-        tileSet.solidTiles = atlasView.solidTiles.sorted()
+        tileSet.solidTiles = solidTiles.sorted()
+        let nonEmpty = categories.filter { !$0.value.isEmpty }
+        tileSet.categories = nonEmpty.isEmpty
+            ? nil : nonEmpty.mapValues { $0.sorted() }
 
         // Renaming: drop the previously selected set's old key.
         if let old = selectedSet(), old.name != name {
@@ -380,8 +436,84 @@ class TileSetEditorViewController: NSViewController,
             atlasPopup.selectItem(at: 0)   // "(none)"
         }
 
-        atlasView.solidTiles = Set(tileSet.solidTiles)
+        solidTiles = Set(tileSet.solidTiles)
+        categories = (tileSet.categories ?? [:]).mapValues { Set($0) }
+        activeCategory = nil
+
+        refreshAtlasImage()
+        rebuildMarkTargetPopup()
         refreshAtlasView()
+    }
+
+    // MARK: - Marker targets (Solid / categories)
+
+    private func sortedCategoryNames() -> [String] {
+        categories.keys.sorted()
+    }
+
+    private func rebuildMarkTargetPopup() {
+        markTargetPopup.removeAllItems()
+        markTargetPopup.addItem(withTitle: "Solid (collision)")
+        markTargetPopup.addItems(withTitles: sortedCategoryNames())
+        markTargetPopup.menu?.addItem(.separator())
+        markTargetPopup.addItem(withTitle: "New Category…")
+
+        if let active = activeCategory, markTargetPopup.itemTitles.contains(active) {
+            markTargetPopup.selectItem(withTitle: active)
+        } else {
+            activeCategory = nil
+            markTargetPopup.selectItem(at: 0)
+        }
+    }
+
+    @objc private func markTargetChanged() {
+        let title = markTargetPopup.titleOfSelectedItem ?? ""
+
+        if title == "New Category…" {
+            promptNewCategory()
+            return
+        }
+
+        activeCategory = title == "Solid (collision)" ? nil : title
+        refreshAtlasView()
+    }
+
+    private func promptNewCategory() {
+        let alert = NSAlert()
+        alert.messageText = "New Tile Category"
+        alert.informativeText = "A category groups related tiles (Ground, Hazards, Decor…) — like a character groups its animations."
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let nameInput = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 22))
+        nameInput.placeholderString = "Ground"
+        alert.accessoryView = nameInput
+        alert.window.initialFirstResponder = nameInput
+
+        let created: String?
+        if alert.runModal() == .alertFirstButtonReturn {
+            let name = nameInput.stringValue.trimmingCharacters(in: .whitespaces)
+            created = name.isEmpty ? nil : name
+        } else {
+            created = nil
+        }
+
+        if let created {
+            if categories[created] == nil { categories[created] = [] }
+            activeCategory = created
+        }
+        rebuildMarkTargetPopup()
+        refreshAtlasView()
+    }
+
+    private func editingTilesChanged(_ tiles: Set<Int>) {
+        if let active = activeCategory {
+            categories[active] = tiles
+        } else {
+            solidTiles = tiles
+        }
+        let targetName = activeCategory ?? "Solid"
+        statusLabel.stringValue = "\(tiles.count) tile\(tiles.count == 1 ? "" : "s") in \(targetName) — Save Tile Set to keep."
     }
 
     // MARK: - Atlas preview
@@ -413,33 +545,81 @@ class TileSetEditorViewController: NSViewController,
     }
 
     @objc private func atlasChanged() {
+        refreshAtlasImage()
+        autoFillGrid()
         refreshAtlasView()
     }
 
-    /// Reloads the preview image and re-shapes the grid from the
-    /// current field values (fires live while typing).
-    private func refreshAtlasView() {
-        if let atlas = selectedAtlasName(),
-           let assetsDir = ProjectManager.shared.assetsURL {
-            atlasView.image = NSImage(contentsOf: assetsDir.appendingPathComponent(atlas))
-        } else {
-            atlasView.image = nil
+    /// Loads the preview image and records its true pixel size (via
+    /// CGImage — NSImage.size reports points, which lies for high-DPI
+    /// files).
+    private func refreshAtlasImage() {
+        atlasPixelSize = nil
+        atlasView.image = nil
+        guard let atlas = selectedAtlasName(),
+              let assetsDir = ProjectManager.shared.assetsURL,
+              let image = NSImage(contentsOf: assetsDir.appendingPathComponent(atlas)) else {
+            return
         }
+        atlasView.image = image
+        if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            atlasPixelSize = (cg.width, cg.height)
+        }
+    }
 
+    /// Computes Atlas Cols/Rows from the image's pixel size and the
+    /// tile size — the step everyone gets wrong when typing by hand.
+    private func autoFillGrid() {
+        guard let (width, height) = atlasPixelSize else { return }
+        let tileW = max(Float(tileWidthField.stringValue) ?? 16, 1)
+        let tileH = max(Float(tileHeightField.stringValue) ?? 16, 1)
+        columnsField.stringValue = String(max(Int((Float(width) / tileW).rounded()), 1))
+        rowsField.stringValue = String(max(Int((Float(height) / tileH).rounded()), 1))
+    }
+
+    /// Re-shapes the grid + markers from the current state.
+    private func refreshAtlasView() {
         let columns = max(Int(columnsField.stringValue) ?? 4, 1)
         let rows = max(Int(rowsField.stringValue) ?? 4, 1)
         atlasView.columns = columns
         atlasView.rows = rows
         atlasHeightConstraint.constant = min(max(
-            atlasWidth * CGFloat(rows) / CGFloat(columns), 80), 340)
+            atlasWidth * CGFloat(rows) / CGFloat(columns), 120), 440)
+
+        // Passive overlays: every non-active group, each in its color.
+        var overlays: [Int: NSColor] = [:]
+        let names = sortedCategoryNames()
+        for (index, name) in names.enumerated() where name != activeCategory {
+            for tile in categories[name] ?? [] {
+                overlays[tile] = TileAtlasView.categoryColor(index)
+            }
+        }
+        if activeCategory != nil {
+            for tile in solidTiles { overlays[tile] = .systemRed }
+        }
+        atlasView.overlays = overlays
+
+        // The actively edited group.
+        if let active = activeCategory {
+            atlasView.editingTiles = categories[active] ?? []
+            atlasView.editingColor = TileAtlasView.categoryColor(
+                names.firstIndex(of: active) ?? 0)
+        } else {
+            atlasView.editingTiles = solidTiles
+            atlasView.editingColor = .systemRed
+        }
     }
 
     // MARK: - NSTextFieldDelegate
 
     func controlTextDidChange(_ obj: Notification) {
-        guard let fieldObject = obj.object as? NSTextField,
-              fieldObject === columnsField || fieldObject === rowsField else { return }
-        refreshAtlasView()
+        guard let fieldObject = obj.object as? NSTextField else { return }
+        if fieldObject === tileWidthField || fieldObject === tileHeightField {
+            autoFillGrid()
+            refreshAtlasView()
+        } else if fieldObject === columnsField || fieldObject === rowsField {
+            refreshAtlasView()
+        }
     }
 
     // MARK: - NSTableViewDataSource / Delegate

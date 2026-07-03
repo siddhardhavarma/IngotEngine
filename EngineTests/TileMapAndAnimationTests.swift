@@ -70,12 +70,14 @@ final class TileMapAndAnimationTests: XCTestCase {
         tileSet.tileWidth = 32
         tileSet.tileHeight = 32
         tileSet.solidTiles = [0, 1, 5]
+        tileSet.categories = ["Ground": [0, 1], "Decor": [9, 10]]
         XCTAssertTrue(TileSetLibrary.save(tileSet))
 
         // Force a re-read from disk to prove persistence.
         TileSetLibrary.invalidate()
         XCTAssertEqual(TileSetLibrary.list(), ["Terrain"])
         XCTAssertEqual(TileSetLibrary.tileSet(named: "Terrain"), tileSet)
+        XCTAssertEqual(TileSetLibrary.tileSet(named: "Terrain")?.categories?["Ground"], [0, 1])
 
         // Applying configures the map in one step — already-painted
         // tiles regenerate colliders against the set's solid list.
