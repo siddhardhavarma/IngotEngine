@@ -123,7 +123,32 @@ class SpriteNode: Node {
         super.ready()
         if let name = defaultAnimationName {
             playAnimation(name)
+        } else if characterName != nil {
+            showAnimationPreview()   // resting pose (idle) if one exists
         }
+    }
+
+    /// Shows the resting pose without running the game: resolves the
+    /// default clip (or the attached character's "idle"), swaps to its
+    /// sheet, and freezes on the first frame. The editor calls this in
+    /// design mode — update() never runs there, so without it a sprite
+    /// displays its recorded texture (often the raw sheet or older
+    /// art) until Play starts.
+    func showAnimationPreview() {
+        var restingClip = defaultAnimationName
+        if restingClip == nil, let characterName,
+           AnimationLibrary.clip(named: "\(characterName)/idle") != nil {
+            restingClip = "idle"
+        }
+        guard let name = restingClip else { return }
+
+        playAnimation(name)
+        if let clip = activeAnimation {
+            let (column, row) = clip.gridPosition(frame: 0)
+            setSpriteSheetFrame(gridWidth: clip.gridWidth, gridHeight: clip.gridHeight,
+                                column: column, row: row)
+        }
+        stopAnimation()
     }
 
     override func update(deltaTime: CFTimeInterval, input: InputManager) {

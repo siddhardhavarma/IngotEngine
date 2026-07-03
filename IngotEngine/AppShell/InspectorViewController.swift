@@ -276,10 +276,12 @@ class InspectorViewController: NSViewController, NSTextFieldDelegate {
             popupRow("Character",
                      options: ["(none)"] + AnimationLibrary.characters(),
                      get: { sprite.characterName ?? "(none)" },
-                     set: { sprite.characterName = $0 == "(none)" ? nil : $0 })
+                     set: { sprite.characterName = $0 == "(none)" ? nil : $0
+                            sprite.showAnimationPreview() })
             textRow("Animation", placeholder: "clip name (auto-plays)",
                     get: { sprite.defaultAnimationName ?? "" }) { value in
                 sprite.defaultAnimationName = value.isEmpty ? nil : value
+                sprite.showAnimationPreview()
             }
         }
 
