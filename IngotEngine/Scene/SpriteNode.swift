@@ -47,6 +47,13 @@ class SpriteNode: Node {
     /// runs — playback still updates textureName and UVs.
     static var textureResolver: ((String) -> MTLTexture?)?
 
+    /// The animation character this sprite embodies (e.g. "Player").
+    /// Clip lookups resolve within this character FIRST, so scripts on
+    /// an attached sprite can just call playAnimation("run_left") even
+    /// when other characters define a clip with the same name.
+    /// Serialized with the scene.
+    var characterName: String?
+
     /// The clip that auto-plays when the scene starts (e.g. "idle").
     /// Serialized with the scene.
     var defaultAnimationName: String?
@@ -60,19 +67,28 @@ class SpriteNode: Node {
         name = "Sprite"
     }
 
-    /// Starts a named clip from the project's AnimationLibrary
-    /// ("run_left", or "Player/run_left" when the short name is
-    /// ambiguous). If the clip carries its own sprite sheet, the
-    /// sprite's texture swaps to it. Restarting the already-playing
-    /// clip is a no-op (calling this every frame from a script is safe).
+    /// Starts a named clip from the project's AnimationLibrary.
+    /// Resolution order: the sprite's attached character's clip
+    /// ("<characterName>/name"), then an exact qualified name
+    /// ("Player/run_left"), then an unambiguous short name. If the
+    /// clip carries its own sprite sheet, the sprite's texture swaps
+    /// to it. Restarting the already-playing clip is a no-op (calling
+    /// this every frame from a script is safe).
     override func playAnimation(_ name: String) {
-        if let active = activeAnimation,
-           active.name == name || active.qualifiedName == name { return }
+        var resolved: AnimationClip?
+        if let characterName, !characterName.isEmpty, !name.contains("/") {
+            resolved = AnimationLibrary.clip(named: "\(characterName)/\(name)")
+        }
+        resolved = resolved ?? AnimationLibrary.clip(named: name)
 
-        guard let clip = AnimationLibrary.clip(named: name) else {
-            Log.warning("Animation \"\(name)\" not found.")
+        guard let clip = resolved else {
+            Log.warning("Animation \"\(name)\" not found\(characterName.map { " (character: \($0))" } ?? "").")
             return
         }
+
+        if let active = activeAnimation,
+           active.qualifiedName == clip.qualifiedName { return }
+
         activeAnimation = clip
         animationElapsed = 0
 
@@ -90,6 +106,17 @@ class SpriteNode: Node {
     override func stopAnimation() {
         activeAnimation = nil
         animationElapsed = 0
+    }
+
+    /// JS: node.character = "Player" — scopes playAnimation lookups.
+    override var character: String {
+        get { characterName ?? "" }
+        set { characterName = newValue.isEmpty ? nil : newValue }
+    }
+
+    /// JS: if (node.currentAnimation != "run_left") node.playAnimation("run_left")
+    override var currentAnimation: String {
+        activeAnimation?.name ?? ""
     }
 
     override func ready() {

@@ -151,6 +151,38 @@ final class TileMapAndAnimationTests: XCTestCase {
         XCTAssertNotNil(AnimationLibrary.clip(named: "Slime/run_left"))
     }
 
+    func testAttachedCharacterScopesClipResolution() {
+        // Two characters share the clip name "run_left".
+        var playerClip = AnimationClip(name: "run_left", gridWidth: 8, gridHeight: 1,
+                                       startFrame: 0, endFrame: 7, fps: 8, loops: true)
+        playerClip.character = "Player"
+        playerClip.textureName = "player_run.png"
+        AnimationLibrary.save(playerClip)
+
+        var slimeClip = playerClip
+        slimeClip.character = "Slime"
+        slimeClip.textureName = "slime_run.png"
+        AnimationLibrary.save(slimeClip)
+
+        // Globally ambiguous short name…
+        XCTAssertNil(AnimationLibrary.clip(named: "run_left"))
+
+        // …but a sprite with a character attached resolves within it,
+        // and adopts that character's sheet.
+        let sprite = SpriteNode()
+        sprite.characterName = "Slime"
+        sprite.playAnimation("run_left")
+        XCTAssertEqual(sprite.activeAnimation?.character, "Slime")
+        XCTAssertEqual(sprite.textureName, "slime_run.png")
+        XCTAssertEqual(sprite.currentAnimation, "run_left")
+
+        // JS-facing property round-trips.
+        sprite.character = ""
+        XCTAssertNil(sprite.characterName)
+        sprite.character = "Player"
+        XCTAssertEqual(sprite.characterName, "Player")
+    }
+
     func testDefaultAnimationAutoplaysOnReady() {
         AnimationLibrary.save(AnimationClip(name: "idle", gridWidth: 2, gridHeight: 2,
                                             startFrame: 0, endFrame: 3, fps: 4, loops: true))

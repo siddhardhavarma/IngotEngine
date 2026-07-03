@@ -29,7 +29,7 @@ class AssetLibraryViewController: NSViewController,
 
     /// One row in the library.
     private struct AssetItem {
-        enum Kind { case texture, audio, script, prefab, animation }
+        enum Kind { case texture, audio, script, prefab, character, animation }
         let kind: Kind
         let name: String
         let url: URL?          // nil for prefabs/animations (load by name)
@@ -53,6 +53,9 @@ class AssetLibraryViewController: NSViewController,
 
     /// Double-click on an animation clip: open the Animations window.
     var onOpenAnimations: (() -> Void)?
+
+    /// Double-click on a character: attach it to the selected sprite.
+    var onAttachCharacter: ((String) -> Void)?
 
     /// Status/log line (routed to the AI chat history).
     var onLog: ((String) -> Void)?
@@ -199,6 +202,12 @@ class AssetLibraryViewController: NSViewController,
         }
 
         if filter == 0 || filter == 5 {
+            // Characters first — attachable to sprites — then their clips.
+            for character in AnimationLibrary.characters() {
+                items.append(AssetItem(kind: .character, name: character,
+                                       url: nil,
+                                       subtitle: "Character — double-click attaches to selection"))
+            }
             for clip in AnimationLibrary.list() {
                 items.append(AssetItem(kind: .animation, name: clip,
                                        url: nil, subtitle: "Animation clip"))
@@ -295,6 +304,8 @@ class AssetLibraryViewController: NSViewController,
             onOpenScript?(item.name)
         case .prefab:
             onPlacePrefab?(item.name)
+        case .character:
+            onAttachCharacter?(item.name)
         case .animation:
             onOpenAnimations?()
         }
@@ -337,6 +348,9 @@ class AssetLibraryViewController: NSViewController,
         case .prefab:
             thumb.image = NSImage(systemSymbolName: "shippingbox", accessibilityDescription: nil)
             thumb.contentTintColor = .systemOrange
+        case .character:
+            thumb.image = NSImage(systemSymbolName: "person.fill", accessibilityDescription: nil)
+            thumb.contentTintColor = .systemPink
         case .animation:
             thumb.image = NSImage(systemSymbolName: "figure.walk.motion", accessibilityDescription: nil)
             thumb.contentTintColor = .systemGreen

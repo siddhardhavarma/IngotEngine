@@ -184,7 +184,11 @@ var Script = {
 };
 ```
 The JS file is parsed ONCE. Each frame calls the compiled `update` function.
-Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
+Node API: `x`, `y`, `rotationDegrees`, `scaleX/Y`, `zIndexJS`, `visible`, `name`, `jsZoom`, `setFrame()`, `getChild(name)`, `emitSignal(name)`, `setVelocity(x,y)`, `spawn(prefab,x,y)`, `character` (get/set), `currentAnimation`, `playAnimation(clip)`, `stopAnimation()`, `changeScene(name)`, `destroy()`.
+A sprite with a `character` attached resolves `playAnimation("run_left")` within that character's clips (and swaps to the clip's own sheet); `playAnimation` is a no-op when the clip is already playing, so driving animations from `update()` every frame is the idiomatic pattern.
+
+### Character Attachment (sprite ↔ animation set)
+`SpriteNode.characterName` binds a sprite to a character's clip set: attach via the Inspector's Character dropdown, double-clicking the character in the Asset Library (Animations filter), or the AI's `setCharacter`. Attachment scopes script lookups to that character and auto-plays its "idle" clip on scene start (when one exists and no default is set). Serialized with the scene.
 
 ### Animation Workflow (character-based)
 In the Animations window: New Character… ("Player"), then define each clip it performs (idle_up, run_left, …) with its OWN sprite sheet, grid, frame range, fps, loop — live preview plays from the clip's sheet. Because the sheet is saved on the clip, `node.playAnimation("run_left")` swaps the sprite's texture to run_left.png automatically (use "Player/run_left" if two characters share a clip name). Clips live in animations.json and travel into exports. Play from JS, rules (playAnimation action), AI (`defineAnimation` with character/textureName, `setDefaultAnimation`, `playAnimation`), or auto-play via the sprite's Animation field.

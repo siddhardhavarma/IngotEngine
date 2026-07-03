@@ -177,6 +177,9 @@ struct SceneSerializer {
             if let animation = sprite.defaultAnimationName {
                 dict["defaultAnimation"] = animation
             }
+            if let character = sprite.characterName {
+                dict["characterName"] = character
+            }
         }
 
         if let tileMap = node as? TileMapNode, let textureName = tileMap.textureName {

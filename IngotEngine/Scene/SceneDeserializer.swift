@@ -179,6 +179,9 @@ struct SceneDeserializer {
             if let animation = dict["defaultAnimation"] as? String {
                 sprite.defaultAnimationName = animation
             }
+            if let character = dict["characterName"] as? String {
+                sprite.characterName = character
+            }
         }
 
         if let tileMap = node as? TileMapNode,

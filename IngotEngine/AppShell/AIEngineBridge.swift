@@ -128,7 +128,8 @@ class AIEngineBridge {
             Required: "targetName", "code" (JavaScript string using lifecycle format)
             The code MUST use this lifecycle pattern:
             var Script = { start: function(node) {}, update: function(node, dt, time) {} };
-            Node API: node.x, node.y, node.rotationDegrees, node.scaleX, node.scaleY, node.zIndexJS, node.visible, node.name, node.jsZoom (cameras), node.setFrame(cols,rows,col,row), node.getChild(name), node.emitSignal(name), node.setVelocity(x,y), node.spawn(prefabName,x,y), node.playAnimation(clipName), node.stopAnimation(), node.destroy()
+            Node API: node.x, node.y, node.rotationDegrees, node.scaleX, node.scaleY, node.zIndexJS, node.visible, node.name, node.jsZoom (cameras), node.setFrame(cols,rows,col,row), node.getChild(name), node.emitSignal(name), node.setVelocity(x,y), node.spawn(prefabName,x,y), node.character, node.currentAnimation, node.playAnimation(clipName), node.stopAnimation(), node.destroy()
+            Sprites with a character attached resolve playAnimation("run_left") within that character's clips and swap to the clip's sprite sheet automatically; playAnimation is safe to call every frame.
             Input API: Input.isActionPressed(name), Input.isActionJustPressed(name)
 
         19. "generateTexture" — AI-generate an image and apply it to a sprite.
@@ -146,6 +147,11 @@ class AIEngineBridge {
 
         23. "playAnimation" — play a clip on a sprite right now (during Play mode).
             Required: "targetName" (a SpriteNode), "animation" (clip name)
+
+        24. "setCharacter" — attach an animation character to a sprite. Its clips then
+            resolve by short name (playAnimation("run_left")), and "idle" auto-plays on
+            scene start if the character defines it.
+            Required: "targetName" (a SpriteNode), "character"
 
         Example response:
         [
@@ -216,7 +222,19 @@ class AIEngineBridge {
       node.setVelocity(x, y)        — set physics velocity (needs a body)
       node.spawn("Prefab", x, y)    — instantiate a saved prefab
       node.changeScene("Scene")     — switch scenes at end of frame
+      node.character                — attached animation character (get/set)
+      node.currentAnimation         — clip currently playing ("" = none)
+      node.playAnimation("clip")    — play a clip; resolves within the
+                                      attached character first, swaps the
+                                      sprite sheet automatically; safe to
+                                      call every frame (no-op if playing)
+      node.stopAnimation()          — freeze on the current frame
       node.destroy()                — remove the node
+
+    Typical animation-driving pattern in update():
+        if (Input.isActionPressed("move_left"))       node.playAnimation("run_left");
+        else if (Input.isActionPressed("move_right")) node.playAnimation("run_right");
+        else                                          node.playAnimation("idle");
 
     Input API (global `Input`):
       Input.isActionPressed("move_left")      — held this frame
@@ -511,6 +529,7 @@ class AIEngineBridge {
             case "defineAnimation":   executeDefineAnimation(command, onLog: onLog)
             case "setDefaultAnimation": executeSetDefaultAnimation(command, in: scene, onLog: onLog)
             case "playAnimation":     executePlayAnimation(command, in: scene, onLog: onLog)
+            case "setCharacter":      executeSetCharacter(command, in: scene, onLog: onLog)
             case "generateTexture":   dispatchGenerateTexture(command, in: scene, settings: settings, onLog: onLog)
             case "generateSound":     dispatchGenerateSound(command, settings: settings, onLog: onLog)
             default:
@@ -994,6 +1013,22 @@ class AIEngineBridge {
         }
         sprite.playAnimation(animation)
         onLog("Playing \"\(animation)\" on \"\(node.name)\".")
+    }
+
+    private func executeSetCharacter(_ cmd: [String: Any], in scene: Scene,
+                                     onLog: (String) -> Void) {
+        guard let node = target(cmd, in: scene, onLog: onLog),
+              let sprite = node as? SpriteNode,
+              let character = cmd["character"] as? String else {
+            onLog("Error: setCharacter requires targetName (a SpriteNode) and character.")
+            return
+        }
+        sprite.characterName = character.isEmpty ? nil : character
+        if sprite.defaultAnimationName == nil,
+           AnimationLibrary.clip(named: "\(character)/idle") != nil {
+            sprite.defaultAnimationName = "idle"
+        }
+        onLog("Character \"\(character)\" attached to \"\(node.name)\".")
     }
 
     // MARK: - Behavior / script commands

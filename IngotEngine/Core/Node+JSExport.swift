@@ -40,6 +40,14 @@ import simd
     /// Sets the sprite sheet frame. No-op on plain Nodes; SpriteNode overrides.
     func setFrame(_ gridWidth: Int, _ gridHeight: Int, _ column: Int, _ row: Int)
 
+    /// The animation character attached to this sprite ("" = none).
+    /// Setting it scopes playAnimation() lookups to that character.
+    var character: String { get set }
+
+    /// The clip currently playing ("" = none) — lets scripts decide
+    /// when to switch: if (node.currentAnimation != "run_left") …
+    var currentAnimation: String { get }
+
     func getChild(_ name: String) -> Node?
     func emitSignal(_ name: String)
     func setVelocity(_ x: Float, _ y: Float)
@@ -130,6 +138,15 @@ extension Node: NodeJSExport {
     @objc func changeScene(_ name: String) {
         Engine.current?.requestScene(named: name)
     }
+
+    /// Base implementations — plain Nodes have no character/animation;
+    /// SpriteNode overrides all of these.
+    @objc var character: String {
+        get { "" }
+        set { /* no-op: plain Nodes have no sprite frames */ }
+    }
+
+    @objc var currentAnimation: String { "" }
 
     /// Plays a named AnimationLibrary clip. No-op on plain Nodes;
     /// SpriteNode overrides. JS: node.playAnimation("walk")
