@@ -102,10 +102,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         toolbar.allowsUserCustomization = false
         window.toolbar = toolbar
 
-        window.center()
+        // Remember size/position across launches (Godot-style session).
+        window.setFrameAutosaveName("IngotEditorWindow")
+        if !window.setFrameUsingName("IngotEditorWindow") {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         editorWindow = window
+    }
+
+    /// Closing the editor window quits (and persists) — there's no
+    /// hidden headless state to get confused by.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return true
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {

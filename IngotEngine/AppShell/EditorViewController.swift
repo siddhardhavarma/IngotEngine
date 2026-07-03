@@ -323,6 +323,7 @@ class EditorViewController: NSSplitViewController {
             self.sidebar.rootNode = scene.rootNode
             self.inspector.selectedNode = nil
             self.eventSheet.targetNode = nil
+            self.chatPanel.setContext("No selection — commands target the whole scene")
             self.chatPanel.appendToHistory("Scene changed.")
         }
     }
@@ -439,8 +440,13 @@ class EditorViewController: NSSplitViewController {
     /// Saves everything that represents session state: the open scene
     /// and the project manifest. Called on Play, on quit, and when
     /// leaving a scene — pressing Save by hand is never *required*.
+    ///
+    /// NEVER saves the scene while the game is running: Play mutates
+    /// the live tree (gravity, rules, scripts), and writing that
+    /// runtime state would clobber the design-time save made when
+    /// Play started.
     func persistSession() {
-        if let scene = engine.currentScene {
+        if !engine.isPlaying, let scene = engine.currentScene {
             ProjectManager.shared.saveScene(scene, named: currentSceneName)
         }
         rememberOpenScene()
@@ -448,22 +454,36 @@ class EditorViewController: NSSplitViewController {
 
     // MARK: - Play / Stop
 
+    /// Play saves the design state first; Stop RESTORES it. The game
+    /// runs on the live scene tree, so without the restore, everything
+    /// would stay wherever gameplay left it (Godot avoids this by
+    /// running a separate instance; the save/restore pair is our
+    /// equivalent).
     private func togglePlay() {
-        engine.isPlaying.toggle()
-
-        // Re-register physics on every play start so nodes added since
-        // the scene was set (sidebar, AI commands, painted tiles) collide.
-        if engine.isPlaying, let scene = engine.currentScene {
-            engine.physicsWorld.removeAllBodies()
-            scene.registerPhysicsBodies(with: engine.physicsWorld)
-            // Godot-style save-on-run: pressing Play never loses work.
-            persistSession()
+        if engine.isPlaying {
+            engine.isPlaying = false
+            sidebar.updatePlayButton(isPlaying: false)
+            updatePlayStopToolbarItem()
+            chatPanel.appendToHistory("■ Stopped — scene restored to its saved state")
+            switchToScene(named: currentSceneName, savingCurrent: false)
+            return
         }
 
-        sidebar.updatePlayButton(isPlaying: engine.isPlaying)
-        updatePlayStopToolbarItem()
+        // Save-on-run BEFORE the game touches anything.
+        persistSession()
 
-        chatPanel.appendToHistory(engine.isPlaying ? "▶ Playing" : "■ Stopped")
+        engine.isPlaying = true
+
+        // Re-register physics so nodes added since the scene was set
+        // (sidebar, AI commands, painted tiles) collide.
+        if let scene = engine.currentScene {
+            engine.physicsWorld.removeAllBodies()
+            scene.registerPhysicsBodies(with: engine.physicsWorld)
+        }
+
+        sidebar.updatePlayButton(isPlaying: true)
+        updatePlayStopToolbarItem()
+        chatPanel.appendToHistory("▶ Playing")
     }
 
     private func updatePlayStopToolbarItem() {
@@ -477,11 +497,16 @@ class EditorViewController: NSSplitViewController {
     // MARK: - Scenes (save / load / switch / create)
 
     private func saveCurrentScene() {
+        guard !engine.isPlaying else {
+            chatPanel.appendToHistory("Can't save during Play — the design state was already saved when Play started.")
+            return
+        }
         guard let scene = engine.currentScene else {
             chatPanel.appendToHistory("Nothing to save.")
             return
         }
         ProjectManager.shared.saveScene(scene, named: currentSceneName)
+        rememberOpenScene()
         chatPanel.appendToHistory("Saved scene: \(currentSceneName)")
     }
 
@@ -492,6 +517,15 @@ class EditorViewController: NSSplitViewController {
     /// Switches the editor to another scene file, optionally saving the
     /// one being left first (so no work is lost on switch).
     private func switchToScene(named name: String, savingCurrent: Bool = true) {
+        // Switching while the game runs would save runtime state —
+        // stop first (which restores nothing here; the target scene
+        // load below replaces the tree anyway).
+        if engine.isPlaying {
+            engine.isPlaying = false
+            sidebar.updatePlayButton(isPlaying: false)
+            updatePlayStopToolbarItem()
+        }
+
         if savingCurrent, let scene = engine.currentScene {
             ProjectManager.shared.saveScene(scene, named: currentSceneName)
         }
@@ -620,6 +654,10 @@ class EditorViewController: NSSplitViewController {
             target.registerUndoSnapshot()
             guard let restoredRoot = SceneDeserializer.deserialize(jsonString: snapshotJSON) else { return }
             SceneDeserializer.restoreTextures(textureMap, to: restoredRoot)
+            // The name-keyed texture map can mis-restore when nodes
+            // share a name — textureName-based reload is authoritative
+            // for anything assigned from the Asset Library.
+            target.assignProjectTextures(to: restoredRoot)
             scene.rootNode = restoredRoot
             target.engine.physicsWorld.removeAllBodies()
             scene.registerPhysicsBodies(with: target.engine.physicsWorld)
@@ -843,7 +881,10 @@ extension EditorViewController: NSToolbarDelegate, NSMenuDelegate {
         window.contentViewController = editor
         // ARC owns the window (see AppDelegate for the over-release story).
         window.isReleasedWhenClosed = false
-        window.center()
+        window.setFrameAutosaveName("IngotAnimationsWindow")
+        if !window.setFrameUsingName("IngotAnimationsWindow") {
+            window.center()
+        }
         window.makeKeyAndOrderFront(nil)
 
         animationWindow = window
