@@ -10,9 +10,9 @@ open IngotEngine.xcodeproj
 
 # Build & Run (Cmd+R)
 # The Project Launcher opens first (recent projects / New Project / Open)
-# Choosing a project opens the editor with a demo scene (player, particle
-# trail, walls, follow camera)
-# Click ▶ in the toolbar to enter Play mode (WASD to move)
+# New projects start COMPLETELY BLANK (an empty scene with one centered
+# camera); existing projects reopen the scene you last worked on
+# Click ▶ in the toolbar to enter Play mode
 # Set AI provider + API keys via the ✦ AI Settings toolbar button
 ```
 
@@ -99,7 +99,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `TileMapNode.swift` | Godot TileMap: sparse tile grid over an atlas texture. `setTile`/`fillRect`, `solidTiles` generate static colliders (one PhysicsBody per solid tile via body `offset`). A whole map batches into one draw call. |
 | `Prefab.swift` | Godot PackedScene: `PrefabLibrary.save/instantiate/list` (JSON files in Prefabs/), plus `Node.duplicate()`. Spawnable at runtime from rules, JS, and AI commands. |
 | `Scene.swift` | Owns rootNode tree + activeCamera. `findNode(named:)`, `findNodes(inGroup:)`. Registers node + tile-map physics bodies. |
-| `DemoScene.swift` | Pre-built demo: player with WASD + JS animation, particle trail, smoothed follow camera, 5 walls. |
+| `DemoScene.swift` | (No longer auto-loaded — new projects start blank. Kept as a reference scene builder; excluded from exports.) |
 | `SceneSerializer.swift` | Serializes EVERYTHING to JSON: nodes, transforms, physics, behaviors, scripts, UVs, modulate, particles, tile maps, timers, camera refs. `serializeSubtree` feeds prefabs. |
 | `SceneDeserializer.swift` | Polymorphic deserialization (§12.1). Rebuilds the complete scene from JSON including behaviors and physics bodies. `buildRule` is shared with the AI bridge. |
 
@@ -139,7 +139,7 @@ Toolbar: Save · Scenes ▾ · Animations · ▶ Play · Project · ✦ AI Setti
 ```
 
 State model (Godot-style — manual Save is never *required*):
-- The editor reopens `lastOpenedScene` on launch (fresh projects save the demo as the entry scene immediately)
+- The editor reopens `lastOpenedScene` on launch (fresh projects save a blank camera-only scene as the entry scene immediately)
 - Pressing ▶ Play saves the scene first; switching scenes saves the one you leave; quitting persists everything (`persistSession()`)
 - project.json = settings (name, design size, entry scene — edited via the Project toolbar sheet); animations.json = clips; Scenes/, Scripts/, Prefabs/, Assets/ = everything else
 
