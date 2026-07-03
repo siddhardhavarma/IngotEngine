@@ -48,6 +48,7 @@ class EditorViewController: NSSplitViewController {
     private var chatPanel: ChatPanelViewController!
     private var eventSheet: EventSheetViewController!
     private var scriptEditor: ScriptEditorViewController!
+    private var assetStudio: AIAssetStudioViewController!
     private var logicTabs: NSTabViewController!
 
     private let aiBridge = AIEngineBridge()
@@ -125,6 +126,11 @@ class EditorViewController: NSSplitViewController {
         scriptEditor.sceneProvider = { [weak self] in self?.engine.currentScene }
         scriptEditor.settingsProvider = { [weak self] in self?.aiSettings ?? AISettings() }
         logicTabs.addChild(scriptEditor)
+
+        assetStudio = AIAssetStudioViewController()
+        assetStudio.title = "✦ AI Assets"
+        assetStudio.settingsProvider = { [weak self] in self?.aiSettings ?? AISettings() }
+        logicTabs.addChild(assetStudio)
 
         let logicItem = NSSplitViewItem(viewController: logicTabs)
         logicItem.minimumThickness = 150
@@ -326,6 +332,22 @@ class EditorViewController: NSSplitViewController {
                 audioManager: engine.audio,
                 device: device
             )
+            assetStudio.generator = generator
+        }
+
+        // --- AI Asset Studio (the ✦ AI Assets tab) ---
+        assetStudio.audioManager = engine.audio
+        assetStudio.onLog = { [weak self] message in
+            self?.chatPanel.appendToHistory(message)
+        }
+        assetStudio.onAssetsChanged = { [weak self] in
+            self?.assetLibrary.refresh()
+        }
+        assetStudio.onAssignTexture = { [weak self] url in
+            self?.assignTextureAsset(url)
+        }
+        assetStudio.onAssignAudio = { [weak self] fileName in
+            self?.assignAudioAsset(fileName)
         }
 
         // AI-created sprites/tile maps get the editor's default texture

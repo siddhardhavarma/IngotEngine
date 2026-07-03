@@ -116,7 +116,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 | `InputManager.swift` | Singleton. Maps UInt16 keycodes → string action names. `setKeyPressed()` from viewport, `isActionPressed()` + `isActionJustPressed()` from behaviors/JS. `setActionPressed()` for virtual joysticks (used by exported iOS games). JSExport-compatible. |
 | `AudioManager.swift` | Array of AVAudioPlayers for concurrent SFX. `playSound(named:)` and `playSound(from:)`. |
 | `MusicPlayer.swift` | Single-track background music with loop/pause/resume/volume. |
-| `AssetGenerator.swift` | DALL-E 3 image gen + ElevenLabs sound gen. Saves to project Assets/. |
+| `AssetGenerator.swift` | DALL·E 3 image gen (1024px+ sizes, optional file name) + ElevenLabs sound gen (0.5–22s duration, optional file name). Saves to project Assets/. Used by the ✦ AI Assets studio tab and the copilot's generateTexture/generateSound commands. |
 | `AssetDownloadQueue.swift` | Async asset pipeline: placeholder → background download → main thread swap. Never blocks the render loop. |
 | `KeychainStore.swift` | Minimal Keychain wrapper (generic-password items) for API keys — secrets never live in source, project files, or exports. |
 
@@ -125,7 +125,7 @@ Implemented in `Engine.step(deltaTime:)`. The renderer (`ViewportViewController`
 |------|-------------|
 | `Shaders.metal` | Instanced vertex shader: `viewProjection × model × local`. UV atlas remapping: `finalUV = uvRect.xy + baseUV * uvRect.zw`. Per-instance modulate color multiplied in the fragment shader. Linear-filtered texture sampling. |
 
-### AppShell/ (16 files — the macOS editor)
+### AppShell/ (17 files — the macOS editor)
 
 Editor layout (three columns, organized "what exists → what you see → what it is"):
 ```
@@ -133,8 +133,8 @@ Editor layout (three columns, organized "what exists → what you see → what i
 │ SCENE         │                          │ INSPECTOR       │
 │ HIERARCHY     │        VIEWPORT          │ (per-type)      │
 ├───────────────┤──────────────────────────├─────────────────┤
-│ ASSET LIBRARY │ LOGIC: Event Sheet |     │ ✦ AI COPILOT    │
-│ import/assign │        Script Editor     │ (always open)   │
+│ ASSET LIBRARY │ LOGIC: Event Sheet ·     │ ✦ AI COPILOT    │
+│ import/assign │ Scripts · ✦ AI Assets    │ (always open)   │
 └───────────────┴──────────────────────────┴─────────────────┘
 Toolbar: Save · Scenes ▾ · Animations · Tiles · ▶ Play · Project · ✦ AI Settings · Export
 ```
@@ -149,6 +149,7 @@ State model (Godot-style — manual Save is never *required*):
 | `ProjectLauncherViewController.swift` | The startup window (Godot-style project manager): recent projects list (UserDefaults-backed, double-click to open), New Project… (save panel creates the folder), Open Existing…. AppDelegate opens the editor after a project is chosen. |
 | `AssetLibraryViewController.swift` | Left-dock asset hub: Import… accepts files AND folders (recursed, flattened) and copies png/jpg/wav/mp3 into Assets/; list shows real image thumbnails, filter popup (All/Art/Audio/Scripts/Prefabs/Animations/Tile Sets). Double-click assigns: texture → selected Sprite/TileMap (records `textureName`), audio → selected AudioNode, script → assigned to selection AND opened in the Script Editor, prefab → placed in the scene, animation → opens the Animations window, tile set → applied to the selected TileMap. |
 | `ScriptEditorViewController.swift` | Built-in code editor tab: script picker + New/Save, JS syntax highlighting + line-number ruler, Save hot-reloads every ScriptBehavior using the file (live during Play). AI assist bar rewrites the script from a natural-language request, grounded in the full engine scripting reference + current scene nodes. |
+| `AIAssetStudioViewController.swift` | The ✦ AI Assets tab (logic dock): purpose-built asset generation. Image mode (DALL·E 3): asset-class presets (texture/tile, character sprite, sprite sheet, effect, background, UI) that scaffold the prompt, size presets, pixel-art toggle. Sound mode (ElevenLabs): SFX/ambience/UI presets + duration. Results save into Assets/ under a chosen (collision-safe) name, preview in place, refresh the Asset Library, and assign to the selection in one click. Keys from ✦ AI Settings. |
 | `AISettingsViewController.swift` | Settings sheet (✦ toolbar): provider picker, per-provider model ID fields, secure API-key fields (stored in Keychain), readiness status. |
 | `AnimationEditorViewController.swift` | The Animations window (toolbar button), character-based: character popup + New Character…, the selected character's clips (+/−), per-clip fields incl. its OWN sprite sheet, and a live preview playing from that sheet. Saves to animations.json. |
 | `TileSetEditorViewController.swift` | The Tile Sets window (Tiles toolbar button): saved sets list (+/−), atlas image popup, tile size + atlas grid fields, and a clickable atlas preview — click cells to toggle SOLID. Also home of `TileAtlasView`, reused by the Inspector's paint palette. Saves to tilesets.json. |
