@@ -60,6 +60,10 @@ class Scene {
     }
 
     private func registerBodiesRecursive(node: Node, world: PhysicsWorld) {
+        // Disabled nodes are out of the game entirely — they don't
+        // render, don't update, and must not collide either.
+        guard node.isEnabled else { return }
+
         if let body = node.physicsBody {
             world.addBody(body)
         }

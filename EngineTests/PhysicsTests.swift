@@ -23,6 +23,32 @@ final class PhysicsTests: XCTestCase {
         return (node, body)
     }
 
+    func testDisabledNodesDoNotRegisterBodies() {
+        let scene = Scene()
+
+        let wall = Node()
+        wall.addPhysicsBody(PhysicsBody(size: simd_float2(100, 100), isDynamic: false))
+        scene.rootNode.addChild(wall)
+
+        let hiddenWall = Node()
+        hiddenWall.addPhysicsBody(PhysicsBody(size: simd_float2(100, 100), isDynamic: false))
+        hiddenWall.isEnabled = false
+        scene.rootNode.addChild(hiddenWall)
+
+        // A disabled tile map's solid-tile colliders stay out too.
+        let map = TileMapNode()
+        map.solidTiles = [0]
+        map.setTile(x: 0, y: 0, tileIndex: 0)
+        map.isEnabled = false
+        scene.rootNode.addChild(map)
+
+        let world = PhysicsWorld()
+        scene.registerPhysicsBodies(with: world)
+
+        XCTAssertEqual(world.bodies.count, 1,
+                       "Disabled nodes don't render, don't update — and must not collide")
+    }
+
     func testGravityIntegratesVelocityAndPosition() {
         let world = PhysicsWorld()
         world.gravity = simd_float2(0, -100)
