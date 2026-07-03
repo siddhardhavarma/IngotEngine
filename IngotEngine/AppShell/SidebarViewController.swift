@@ -62,7 +62,7 @@ class SidebarViewController: NSViewController,
         outlineView.headerView = nil
         outlineView.indentationPerLevel = 16
         outlineView.rowHeight = 24
-        outlineView.selectionHighlightStyle = .sourceList
+        outlineView.style = .sourceList
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("NodeName"))
         column.title = "Node"

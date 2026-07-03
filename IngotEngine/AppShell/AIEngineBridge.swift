@@ -517,6 +517,8 @@ class AIEngineBridge {
                 onLog("Warning: Unknown action \"\(action)\".")
             }
         }
+
+        return executed
     }
 
     // MARK: - Field helpers
